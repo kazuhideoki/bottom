@@ -155,7 +155,6 @@ pub fn sysinfo_process_data(
             } else {
                 Duration::from_secs(process.run_time())
             },
-            start_time: process.start_time(),
             #[cfg(feature = "gpu")]
             gpu_mem,
             #[cfg(feature = "gpu")]

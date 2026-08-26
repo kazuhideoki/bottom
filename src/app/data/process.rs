@@ -18,7 +18,7 @@ pub struct ProcessData {
 }
 
 impl ProcessData {
-    pub(crate) fn ingest(&mut self, list_of_processes: Vec<ProcessHarvest>) {
+    pub(super) fn ingest(&mut self, list_of_processes: Vec<ProcessHarvest>) {
         self.process_parent_mapping.clear();
 
         // Reverse as otherwise the pid mappings are in the wrong order.
@@ -52,5 +52,12 @@ impl ProcessData {
                 _ => Some(*pid),
             })
             .collect();
+    }
+
+    #[cfg(all(test, feature = "agent-monitor"))]
+    pub(crate) fn from_harvest_for_test(list_of_processes: Vec<ProcessHarvest>) -> Self {
+        let mut data = Self::default();
+        data.ingest(list_of_processes);
+        data
     }
 }

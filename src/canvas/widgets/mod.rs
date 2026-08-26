@@ -1,6 +1,5 @@
 use crate::{collection::network::NetworkHarvest, utils::data_units::convert_bytes};
 
-pub mod agent_dashboard;
 pub mod cpu_basic;
 pub mod cpu_graph;
 pub mod disk_io_graph;

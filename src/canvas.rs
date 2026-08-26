@@ -223,7 +223,7 @@ impl Painter {
                 app_state
                     .process_kill_dialog
                     .draw(f, dialog_draw_area, &self.styles);
-            } else if app_state.is_agent_mode {
+            } else if app_state.agent_monitor.is_overlay_active() {
                 if let Some(frozen_draw_loc) = frozen_draw_loc {
                     self.draw_frozen_indicator(f, frozen_draw_loc);
                 }
@@ -238,6 +238,7 @@ impl Painter {
                     .constraints([Constraint::Percentage(100)])
                     .split(terminal_size);
                 match &app_state.current_widget.widget_type {
+                    #[cfg(feature = "agent-monitor")]
                     Agent => self.draw_agent_dashboard(
                         f,
                         app_state,
@@ -496,6 +497,7 @@ impl Painter {
         for (widget, draw_loc) in widgets.children.iter().zip(widget_draw_locs) {
             if draw_loc.width >= 2 && draw_loc.height >= 2 {
                 match &widget.widget_type {
+                    #[cfg(feature = "agent-monitor")]
                     Agent => {
                         self.draw_agent_dashboard(f, app_state, *draw_loc, widget.widget_id, false)
                     }

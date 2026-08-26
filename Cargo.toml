@@ -54,12 +54,13 @@ doc = false
 
 [features]
 # Used for general release builds.
+agent-monitor = []
 battery = ["dep:starship-battery"]
 nvidia = ["gpu", "dep:nvml-wrapper"]
 gpu = []
 zfs = []
 deploy = ["battery", "nvidia", "zfs"]
-default = ["deploy"]
+default = ["deploy", "agent-monitor"]
 
 # These features should not be included in release builds.
 logging = ["fern", "log"]

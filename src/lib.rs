@@ -7,6 +7,7 @@
 //! application. If you are instead looking for documentation regarding the
 //! *usage* of bottom, refer to [here](https://bottom.pages.dev/stable/).
 
+pub(crate) mod agent_monitor;
 pub(crate) mod app;
 pub(crate) mod components;
 mod utils {
@@ -262,6 +263,10 @@ fn create_collection_thread(
                     CollectionThreadEvent::Reset => {
                         data_collector.data.cleanup();
                     }
+                    #[cfg(feature = "agent-monitor")]
+                    CollectionThreadEvent::SetAgentEnabled(enabled) => {
+                        data_collector.set_agent_collection_enabled(enabled);
+                    }
                 }
             }
 
@@ -287,6 +292,19 @@ fn create_collection_thread(
             }
         }
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DataUpdatePlan {
+    update_app: bool,
+    update_agent: bool,
+}
+
+fn data_update_plan(is_frozen: bool, agent_collection_enabled: bool) -> DataUpdatePlan {
+    DataUpdatePlan {
+        update_app: !is_frozen,
+        update_agent: !is_frozen && agent_collection_enabled,
+    }
 }
 
 /// Main code to call to start bottom.
@@ -430,8 +448,14 @@ pub fn start_bottom(enable_error_hook: &mut bool) -> anyhow::Result<()> {
                         app.is_force_redraw = true;
                     }
 
-                    if !app.data_store.is_frozen() {
-                        app.update_agent_data(collection_time);
+                    let update_plan = data_update_plan(
+                        app.data_store.is_frozen(),
+                        app.is_agent_collection_enabled(),
+                    );
+                    if update_plan.update_app {
+                        if update_plan.update_agent {
+                            app.update_agent_data(collection_time);
+                        }
                         // Convert all data into data for the displayed widgets.
 
                         if app.used_widgets.use_disk {
@@ -477,4 +501,34 @@ pub fn start_bottom(enable_error_hook: &mut bool) -> anyhow::Result<()> {
     cleanup_terminal(&mut terminal)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DataUpdatePlan, data_update_plan};
+
+    #[test]
+    fn agent_collection_does_not_control_normal_app_updates() {
+        assert_eq!(
+            data_update_plan(false, false),
+            DataUpdatePlan {
+                update_app: true,
+                update_agent: false,
+            }
+        );
+        assert_eq!(
+            data_update_plan(false, true),
+            DataUpdatePlan {
+                update_app: true,
+                update_agent: true,
+            }
+        );
+        assert_eq!(
+            data_update_plan(true, true),
+            DataUpdatePlan {
+                update_app: false,
+                update_agent: false,
+            }
+        );
+    }
 }

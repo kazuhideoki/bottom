@@ -92,6 +92,7 @@ pub struct BottomArgs {
 #[derive(Args, Clone, Debug)]
 #[command(next_help_heading = "General Options", rename_all = "snake_case")]
 pub struct GeneralArgs {
+    #[cfg(feature = "agent-monitor")]
     #[arg(
         long,
         action = ArgAction::SetTrue,
@@ -188,7 +189,9 @@ pub struct GeneralArgs {
             Then, setting '--default_widget_type temperature' will make the temperature widget selected by default."
         },
         value_parser = [
+            #[cfg(feature = "agent-monitor")]
             "agent",
+            #[cfg(feature = "agent-monitor")]
             "agents",
             "cpu",
             "mem",
@@ -290,6 +293,20 @@ pub struct GeneralArgs {
         alias = "time-delta"
     )]
     pub time_delta: Option<String>,
+}
+
+impl GeneralArgs {
+    pub(crate) fn agent_enabled(&self) -> bool {
+        #[cfg(feature = "agent-monitor")]
+        {
+            self.agent
+        }
+
+        #[cfg(not(feature = "agent-monitor"))]
+        {
+            false
+        }
+    }
 }
 
 /// Process arguments/config options.

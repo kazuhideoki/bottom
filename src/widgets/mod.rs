@@ -1,4 +1,3 @@
-pub mod agent_dashboard;
 pub mod battery_info;
 pub mod cpu_graph;
 pub mod disk_io_graph;
@@ -9,7 +8,6 @@ pub mod process_table;
 pub mod temperature_graph;
 pub mod temperature_table;
 
-pub use agent_dashboard::*;
 pub use battery_info::*;
 pub use cpu_graph::*;
 pub use disk_io_graph::*;

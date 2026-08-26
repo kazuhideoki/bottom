@@ -155,7 +155,6 @@ fn read_proc(
     } = args;
 
     let process_state_char = stat.state;
-    let start_time = stat.start_time;
     let process_state = (
         process_status_str(ProcessStatus::from(process_state_char)),
         process_state_char,
@@ -281,7 +280,6 @@ fn read_proc(
             uid,
             user,
             time,
-            start_time,
             #[cfg(feature = "gpu")]
             gpu_mem: 0,
             #[cfg(feature = "gpu")]

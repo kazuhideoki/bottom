@@ -14,8 +14,9 @@ use crate::{
         components::time_series::{AxisBound, ChartScaling, GraphData},
     },
     components::time_series::GraphDrawCtx,
-    widgets::{AgentFindingKind, AgentHistory, AgentSession, AgentWidgetState},
 };
+
+use super::state::{AgentFindingKind, AgentHistory, AgentMonitor, AgentSession};
 
 impl Painter {
     pub fn draw_agent_dashboard(
@@ -55,7 +56,7 @@ impl Painter {
     }
 
     fn draw_agent_summary(&self, f: &mut Frame<'_>, app_state: &App, area: Rect, is_overlay: bool) {
-        let snapshot = &app_state.states.agent_state.snapshot;
+        let snapshot = &app_state.agent_monitor.snapshot;
         let hint = if is_overlay {
             " a/Esc: normal view "
         } else {
@@ -98,7 +99,7 @@ impl Painter {
     }
 
     fn draw_agent_sessions(&self, f: &mut Frame<'_>, app_state: &App, area: Rect) {
-        let state = &app_state.states.agent_state;
+        let state = &app_state.agent_monitor;
         let available_lines = area.height.saturating_sub(2) as usize;
         let mut rows = Vec::new();
 
@@ -200,14 +201,14 @@ impl Painter {
     fn draw_agent_graphs(
         &self, f: &mut Frame<'_>, app_state: &mut App, cpu_area: Rect, rss_area: Rect,
     ) {
-        let AgentWidgetState {
+        let AgentMonitor {
             snapshot,
             selected_session,
             histories,
             cpu_graph,
             rss_graph,
             ..
-        } = &mut app_state.states.agent_state;
+        } = &mut app_state.agent_monitor;
         let Some(session) = snapshot.sessions.get(*selected_session) else {
             self.draw_empty_agent_graph(f, cpu_area, " CPU — no selected session ");
             self.draw_empty_agent_graph(f, rss_area, " ΣRSS — no selected session ");
@@ -238,7 +239,7 @@ impl Painter {
     }
 
     fn draw_agent_findings(&self, f: &mut Frame<'_>, app_state: &App, area: Rect) {
-        let findings = &app_state.states.agent_state.snapshot.findings;
+        let findings = &app_state.agent_monitor.snapshot.findings;
         let available = area.height.saturating_sub(2) as usize;
         let lines = if findings.is_empty() {
             vec![Line::styled(

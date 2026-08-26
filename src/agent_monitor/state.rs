@@ -17,15 +17,16 @@ use crate::{
 const MIN_RSS_GROWTH_WINDOW: Duration = Duration::from_secs(60);
 const MIN_RSS_GROWTH_BYTES: u64 = 64 * 1024 * 1024;
 const MIN_RSS_GROWTH_RATIO: f64 = 1.20;
+const PROCESS_START_TOLERANCE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum AgentProvider {
+pub(super) enum AgentProvider {
     Codex,
     Claude,
 }
 
 impl AgentProvider {
-    pub const fn label(self) -> &'static str {
+    pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Codex => "Codex",
             Self::Claude => "Claude",
@@ -40,42 +41,31 @@ impl fmt::Display for AgentProvider {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ProcessIdentity {
-    pub pid: Pid,
-    pub start_time: u64,
-}
-
-impl From<&ProcessHarvest> for ProcessIdentity {
-    fn from(process: &ProcessHarvest) -> Self {
-        Self {
-            pid: process.pid,
-            start_time: process.start_time,
-        }
-    }
+pub(super) struct ProcessIdentity {
+    pub(super) pid: Pid,
+    generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct AgentSessionKey {
-    pub root: ProcessIdentity,
+pub(super) struct AgentSessionKey {
+    pub(super) root: ProcessIdentity,
 }
 
 #[derive(Clone, Debug)]
-pub struct AgentProcess {
-    pub identity: ProcessIdentity,
-    pub parent_pid: Option<Pid>,
-    pub name: String,
-    pub depth: usize,
-    pub cpu_usage_percent: f32,
-    pub rss_bytes: u64,
-    pub state: &'static str,
-    pub state_char: char,
+pub(super) struct AgentProcess {
+    pub(super) identity: ProcessIdentity,
+    pub(super) name: String,
+    pub(super) depth: usize,
+    pub(super) cpu_usage_percent: f32,
+    pub(super) rss_bytes: u64,
+    pub(super) state: &'static str,
+    pub(super) state_char: char,
 }
 
 impl AgentProcess {
-    fn from_harvest(process: &ProcessHarvest, depth: usize) -> Self {
+    fn from_harvest(process: &ProcessHarvest, identity: ProcessIdentity, depth: usize) -> Self {
         Self {
-            identity: process.into(),
-            parent_pid: process.parent_pid,
+            identity,
             name: process.name.clone(),
             depth,
             cpu_usage_percent: process.cpu_usage_percent,
@@ -85,54 +75,51 @@ impl AgentProcess {
         }
     }
 
-    pub fn is_zombie(&self) -> bool {
+    pub(super) fn is_zombie(&self) -> bool {
         self.state.eq_ignore_ascii_case("zombie") || self.state_char == 'Z'
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct AgentSession {
-    pub key: AgentSessionKey,
-    pub provider: AgentProvider,
-    pub root_name: String,
-    pub cpu_usage_percent: f32,
-    pub rss_bytes: u64,
-    pub uptime: Duration,
-    pub processes: Vec<AgentProcess>,
-    pub zombie_count: usize,
+pub(super) struct AgentSession {
+    pub(super) key: AgentSessionKey,
+    pub(super) provider: AgentProvider,
+    pub(super) cpu_usage_percent: f32,
+    pub(super) rss_bytes: u64,
+    pub(super) uptime: Duration,
+    pub(super) processes: Vec<AgentProcess>,
+    pub(super) zombie_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AgentFindingKind {
+pub(super) enum AgentFindingKind {
     Zombie,
     Detached,
     RssRising,
 }
 
 #[derive(Clone, Debug)]
-pub struct AgentFinding {
-    pub kind: AgentFindingKind,
-    pub provider: AgentProvider,
-    pub pid: Pid,
-    pub message: String,
+pub(super) struct AgentFinding {
+    pub(super) kind: AgentFindingKind,
+    pub(super) message: String,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct AgentSnapshot {
-    pub sessions: Vec<AgentSession>,
-    pub findings: Vec<AgentFinding>,
-    pub total_cpu_usage_percent: f32,
-    pub total_rss_bytes: u64,
-    pub total_processes: usize,
-    pub codex_sessions: usize,
-    pub claude_sessions: usize,
+pub(super) struct AgentSnapshot {
+    pub(super) sessions: Vec<AgentSession>,
+    pub(super) findings: Vec<AgentFinding>,
+    pub(super) total_cpu_usage_percent: f32,
+    pub(super) total_rss_bytes: u64,
+    pub(super) total_processes: usize,
+    pub(super) codex_sessions: usize,
+    pub(super) claude_sessions: usize,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct AgentHistory {
-    pub time: Vec<Instant>,
-    pub cpu: ChunkedData<f64>,
-    pub rss_mib: ChunkedData<f64>,
+pub(super) struct AgentHistory {
+    pub(super) time: Vec<Instant>,
+    pub(super) cpu: ChunkedData<f64>,
+    pub(super) rss_mib: ChunkedData<f64>,
 }
 
 impl AgentHistory {
@@ -185,18 +172,33 @@ impl AgentHistory {
     }
 }
 
-pub struct AgentWidgetState {
-    pub snapshot: AgentSnapshot,
-    pub selected_session: usize,
-    pub histories: HashMap<AgentSessionKey, AgentHistory>,
-    pub cpu_graph: AutoYAxisTimeGraph,
-    pub rss_graph: AutoYAxisTimeGraph,
+pub(crate) struct AgentMonitor {
+    overlay_active: bool,
+    layout_present: bool,
+    pub(super) snapshot: AgentSnapshot,
+    pub(super) selected_session: usize,
+    pub(super) histories: HashMap<AgentSessionKey, AgentHistory>,
+    pub(super) cpu_graph: AutoYAxisTimeGraph,
+    pub(super) rss_graph: AutoYAxisTimeGraph,
     previous_owner: HashMap<ProcessIdentity, AgentSessionKey>,
     known_providers: HashMap<AgentSessionKey, AgentProvider>,
+    observed_identities: HashMap<Pid, ObservedIdentity>,
+    refresh_generation: u64,
+    next_process_generation: u64,
 }
 
-impl AgentWidgetState {
-    pub fn new(config: &AppConfigFields) -> Self {
+#[derive(Clone, Copy)]
+struct ObservedIdentity {
+    identity: ProcessIdentity,
+    last_refresh: u64,
+    last_uptime: Duration,
+    estimated_start: Option<Instant>,
+}
+
+impl AgentMonitor {
+    pub(crate) fn new(
+        config: &AppConfigFields, overlay_active: bool, layout_present: bool,
+    ) -> Self {
         let graph_config = TimeseriesConfig {
             time_interval: config.time_interval,
             retention_ms: config.retention_ms,
@@ -205,6 +207,8 @@ impl AgentWidgetState {
         };
 
         Self {
+            overlay_active,
+            layout_present,
             snapshot: AgentSnapshot::default(),
             selected_session: 0,
             histories: HashMap::new(),
@@ -212,7 +216,26 @@ impl AgentWidgetState {
             rss_graph: AutoYAxisTimeGraph::new(graph_config, None),
             previous_owner: HashMap::new(),
             known_providers: HashMap::new(),
+            observed_identities: HashMap::new(),
+            refresh_generation: 0,
+            next_process_generation: 0,
         }
+    }
+
+    pub(crate) fn is_overlay_active(&self) -> bool {
+        self.overlay_active
+    }
+
+    pub(crate) fn collection_enabled(&self) -> bool {
+        self.layout_present || self.overlay_active
+    }
+
+    pub(crate) fn toggle_overlay(&mut self) {
+        self.overlay_active = !self.overlay_active;
+    }
+
+    pub(crate) fn close_overlay(&mut self) -> bool {
+        std::mem::take(&mut self.overlay_active)
     }
 
     pub fn reset(&mut self) {
@@ -221,12 +244,16 @@ impl AgentWidgetState {
         self.histories.clear();
         self.previous_owner.clear();
         self.known_providers.clear();
+        self.observed_identities.clear();
+        self.refresh_generation = 0;
+        self.next_process_generation = 0;
         self.cpu_graph.state_mut().reset_zoom();
         self.rss_graph.state_mut().reset_zoom();
     }
 
     pub fn refresh(&mut self, process_data: &ProcessData, at: Instant) {
         let selected_key = self.selected().map(|session| session.key);
+        let identities = self.refresh_process_identities(process_data, at);
         let provider_by_pid = process_data
             .process_harvest
             .values()
@@ -246,7 +273,13 @@ impl AgentWidgetState {
         let mut sessions = roots
             .into_iter()
             .filter_map(|(root_pid, provider)| {
-                build_session(root_pid, provider, process_data, &mut current_owner)
+                build_session(
+                    root_pid,
+                    provider,
+                    process_data,
+                    &identities,
+                    &mut current_owner,
+                )
             })
             .collect::<Vec<_>>();
         sessions.sort_unstable_by_key(|session| (session.provider, session.key.root.pid));
@@ -261,8 +294,6 @@ impl AgentWidgetState {
             {
                 findings.push(AgentFinding {
                     kind: AgentFindingKind::Zombie,
-                    provider: session.provider,
-                    pid: process.identity.pid,
                     message: format!(
                         "ZOMBIE pid {} ({}) under {} #{}",
                         process.identity.pid, process.name, session.provider, session.key.root.pid
@@ -274,7 +305,9 @@ impl AgentWidgetState {
         // Preserve prior ownership for descendants that outlive an agent root and
         // get re-parented. This is a best-effort cleanup signal, not proof of a bug.
         for process in process_data.process_harvest.values() {
-            let identity = ProcessIdentity::from(process);
+            let Some(identity) = identities.get(&process.pid).copied() else {
+                continue;
+            };
             if current_owner.contains_key(&identity) {
                 continue;
             }
@@ -285,8 +318,6 @@ impl AgentWidgetState {
                 current_owner.insert(identity, previous_session);
                 findings.push(AgentFinding {
                     kind: AgentFindingKind::Detached,
-                    provider,
-                    pid: process.pid,
                     message: format!(
                         "DETACHED pid {} ({}) from ended {} #{}",
                         process.pid, process.name, provider, previous_session.root.pid
@@ -301,8 +332,6 @@ impl AgentWidgetState {
             if let Some(growth) = history.rss_growth_bytes() {
                 findings.push(AgentFinding {
                     kind: AgentFindingKind::RssRising,
-                    provider: session.provider,
-                    pid: session.key.root.pid,
                     message: format!(
                         "RSS rising +{} MiB for {} #{} (not a leak verdict)",
                         growth / (1024 * 1024),
@@ -360,13 +389,55 @@ impl AgentWidgetState {
         });
     }
 
-    pub fn selected(&self) -> Option<&AgentSession> {
-        self.snapshot.sessions.get(self.selected_session)
+    fn refresh_process_identities(
+        &mut self, process_data: &ProcessData, at: Instant,
+    ) -> HashMap<Pid, ProcessIdentity> {
+        self.refresh_generation = self.refresh_generation.saturating_add(1);
+        let current_refresh = self.refresh_generation;
+        let mut identities = HashMap::default();
+
+        for process in process_data.process_harvest.values() {
+            let previous = self.observed_identities.get(&process.pid).copied();
+            let estimated_start = at.checked_sub(process.time);
+            let is_continuous = previous.is_some_and(|observed| {
+                observed.last_refresh.saturating_add(1) == current_refresh
+                    && process.time >= observed.last_uptime
+                    && observed.estimated_start.zip(estimated_start).is_some_and(
+                        |(previous, current)| {
+                            instant_distance(previous, current) <= PROCESS_START_TOLERANCE
+                        },
+                    )
+            });
+            let identity = if is_continuous {
+                previous.expect("continuous identity must exist").identity
+            } else {
+                let identity = ProcessIdentity {
+                    pid: process.pid,
+                    generation: self.next_process_generation,
+                };
+                self.next_process_generation = self.next_process_generation.saturating_add(1);
+                identity
+            };
+
+            self.observed_identities.insert(
+                process.pid,
+                ObservedIdentity {
+                    identity,
+                    last_refresh: current_refresh,
+                    last_uptime: process.time,
+                    estimated_start,
+                },
+            );
+            identities.insert(process.pid, identity);
+        }
+
+        self.observed_identities
+            .retain(|_, observed| observed.last_refresh == current_refresh);
+        identities
     }
 
-    pub fn selected_history(&self) -> Option<&AgentHistory> {
-        let session = self.selected()?;
-        self.histories.get(&session.key)
+    pub(super) fn selected(&self) -> Option<&AgentSession> {
+        self.snapshot.sessions.get(self.selected_session)
     }
 
     pub fn increment_selection(&mut self, amount: i64) {
@@ -395,6 +466,14 @@ impl AgentWidgetState {
     }
 }
 
+fn instant_distance(left: Instant, right: Instant) -> Duration {
+    if left >= right {
+        left.duration_since(right)
+    } else {
+        right.duration_since(left)
+    }
+}
+
 fn has_agent_ancestor(
     pid: Pid, process_data: &ProcessData, provider_by_pid: &HashMap<Pid, AgentProvider>,
 ) -> bool {
@@ -419,11 +498,12 @@ fn has_agent_ancestor(
 
 fn build_session(
     root_pid: Pid, provider: AgentProvider, process_data: &ProcessData,
+    identities: &HashMap<Pid, ProcessIdentity>,
     owner: &mut HashMap<ProcessIdentity, AgentSessionKey>,
 ) -> Option<AgentSession> {
     let root = process_data.process_harvest.get(&root_pid)?;
     let key = AgentSessionKey {
-        root: ProcessIdentity::from(root),
+        root: *identities.get(&root_pid)?,
     };
 
     let mut processes = Vec::new();
@@ -437,9 +517,9 @@ fn build_session(
             continue;
         };
 
-        let identity = ProcessIdentity::from(process);
+        let identity = *identities.get(&pid)?;
         owner.insert(identity, key);
-        processes.push(AgentProcess::from_harvest(process, depth));
+        processes.push(AgentProcess::from_harvest(process, identity, depth));
 
         if let Some(children) = process_data.process_parent_mapping.get(&pid) {
             let mut children = children.clone();
@@ -461,7 +541,6 @@ fn build_session(
     Some(AgentSession {
         key,
         provider,
-        root_name: root.name.clone(),
         cpu_usage_percent,
         rss_bytes,
         uptime: root.time,
@@ -523,15 +602,13 @@ mod tests {
             command: name.to_string(),
             cpu_usage_percent: cpu,
             mem_usage: rss,
-            start_time: pid as u64 * 10,
+            time: Duration::from_secs(60),
             ..ProcessHarvest::default()
         }
     }
 
     fn process_data(processes: Vec<ProcessHarvest>) -> ProcessData {
-        let mut data = ProcessData::default();
-        data.ingest(processes);
-        data
+        ProcessData::from_harvest_for_test(processes)
     }
 
     fn config() -> AppConfigFields {
@@ -551,7 +628,7 @@ mod tests {
             process(12, Some(11), "cargo", 2.0, 300),
             process(20, Some(1), "Claude", 3.0, 400),
         ]);
-        let mut state = AgentWidgetState::new(&config());
+        let mut state = AgentMonitor::new(&config(), false, false);
         state.refresh(&data, Instant::now());
 
         assert_eq!(state.snapshot.sessions.len(), 2);
@@ -575,7 +652,7 @@ mod tests {
             process(10, Some(1), "codex", 1.0, 10),
             process(11, Some(10), "claude", 1.0, 10),
         ]);
-        let mut state = AgentWidgetState::new(&config());
+        let mut state = AgentMonitor::new(&config(), false, false);
         state.refresh(&data, Instant::now());
 
         assert_eq!(state.snapshot.sessions.len(), 1);
@@ -589,7 +666,7 @@ mod tests {
         let mut child = process(11, Some(10), "node", 1.0, 10);
         child.process_state = ("Zombie", 'Z');
 
-        let mut state = AgentWidgetState::new(&config());
+        let mut state = AgentMonitor::new(&config(), false, false);
         let now = Instant::now();
         state.refresh(&process_data(vec![root, child.clone()]), now);
         assert!(
@@ -625,19 +702,150 @@ mod tests {
     #[test]
     fn sustained_rss_growth_is_reported_as_a_signal() {
         let now = Instant::now();
-        let mut state = AgentWidgetState::new(&config());
+        let mut state = AgentMonitor::new(&config(), false, false);
         state.refresh(
             &process_data(vec![process(10, Some(1), "codex", 1.0, 100 * 1024 * 1024)]),
             now,
         );
-        state.refresh(
-            &process_data(vec![process(10, Some(1), "codex", 1.0, 180 * 1024 * 1024)]),
-            now + Duration::from_secs(61),
-        );
+        let mut grown = process(10, Some(1), "codex", 1.0, 180 * 1024 * 1024);
+        grown.time = Duration::from_secs(121);
+        state.refresh(&process_data(vec![grown]), now + Duration::from_secs(61));
 
         assert!(state.snapshot.findings.iter().any(|finding| {
             finding.kind == AgentFindingKind::RssRising
                 && finding.message.contains("not a leak verdict")
         }));
+    }
+
+    #[test]
+    fn reused_pid_does_not_inherit_session_history() {
+        let now = Instant::now();
+        let mut state = AgentMonitor::new(&config(), false, false);
+        let first = process(10, Some(1), "codex", 1.0, 100);
+        state.refresh(&process_data(vec![first]), now);
+        let first_key = state.snapshot.sessions[0].key;
+
+        let mut replacement = process(10, Some(1), "codex", 1.0, 200);
+        replacement.time = Duration::from_secs(1);
+        state.refresh(
+            &process_data(vec![replacement]),
+            now + Duration::from_secs(1),
+        );
+        let replacement_key = state.snapshot.sessions[0].key;
+
+        assert_ne!(first_key, replacement_key);
+        assert_eq!(state.histories.len(), 2);
+    }
+
+    #[test]
+    fn pid_reappearing_after_a_gap_does_not_inherit_history() {
+        let now = Instant::now();
+        let mut state = AgentMonitor::new(&config(), false, false);
+        state.refresh(
+            &process_data(vec![process(10, Some(1), "codex", 1.0, 100)]),
+            now,
+        );
+        let first_key = state.snapshot.sessions[0].key;
+
+        state.refresh(&process_data(Vec::new()), now + Duration::from_secs(1));
+        state.refresh(
+            &process_data(vec![process(10, Some(1), "codex", 1.0, 200)]),
+            now + Duration::from_secs(2),
+        );
+        let replacement_key = state.snapshot.sessions[0].key;
+
+        assert_ne!(first_key, replacement_key);
+        assert_eq!(state.histories.len(), 2);
+    }
+
+    #[test]
+    fn pid_reused_while_collection_is_paused_does_not_inherit_history() {
+        let now = Instant::now();
+        let mut state = AgentMonitor::new(&config(), false, false);
+        let first = process(10, Some(1), "codex", 1.0, 100);
+        state.refresh(&process_data(vec![first]), now);
+        let first_key = state.snapshot.sessions[0].key;
+
+        // No empty refresh occurs while collection is disabled. A replacement
+        // process can therefore have the same PID and a larger uptime than the
+        // last observed process without being the same process.
+        let mut replacement = process(10, Some(1), "codex", 1.0, 200);
+        replacement.time = Duration::from_secs(120);
+        state.refresh(
+            &process_data(vec![replacement]),
+            now + Duration::from_secs(600),
+        );
+        let replacement_key = state.snapshot.sessions[0].key;
+
+        assert_ne!(first_key, replacement_key);
+        assert_eq!(state.histories.len(), 2);
+    }
+
+    #[test]
+    fn same_process_after_collection_pause_keeps_history() {
+        let now = Instant::now();
+        let mut state = AgentMonitor::new(&config(), false, false);
+        let first = process(10, Some(1), "codex", 1.0, 100);
+        state.refresh(&process_data(vec![first]), now);
+        let first_key = state.snapshot.sessions[0].key;
+
+        let mut continued = process(10, Some(1), "codex", 1.0, 200);
+        continued.time = Duration::from_secs(660);
+        state.refresh(
+            &process_data(vec![continued]),
+            now + Duration::from_secs(600),
+        );
+
+        assert_eq!(state.snapshot.sessions[0].key, first_key);
+        assert_eq!(state.histories.len(), 1);
+    }
+
+    #[test]
+    fn detached_finding_disappears_after_process_exits() {
+        let now = Instant::now();
+        let mut state = AgentMonitor::new(&config(), false, false);
+        let root = process(10, Some(1), "codex", 1.0, 10);
+        let mut child = process(11, Some(10), "node", 1.0, 10);
+        state.refresh(&process_data(vec![root, child.clone()]), now);
+
+        child.parent_pid = Some(1);
+        state.refresh(&process_data(vec![child]), now + Duration::from_secs(1));
+        assert!(
+            state
+                .snapshot
+                .findings
+                .iter()
+                .any(|finding| finding.kind == AgentFindingKind::Detached)
+        );
+
+        state.refresh(&process_data(Vec::new()), now + Duration::from_secs(2));
+        assert!(state.snapshot.findings.is_empty());
+    }
+
+    #[test]
+    fn selection_follows_session_identity_when_sort_order_changes() {
+        let now = Instant::now();
+        let mut state = AgentMonitor::new(&config(), false, false);
+        state.refresh(
+            &process_data(vec![
+                process(10, Some(1), "codex", 1.0, 10),
+                process(20, Some(1), "codex", 1.0, 10),
+            ]),
+            now,
+        );
+        state.selected_session = 1;
+        let selected_key = state.selected().unwrap().key;
+
+        state.refresh(
+            &process_data(vec![
+                process(5, Some(1), "codex", 1.0, 10),
+                process(10, Some(1), "codex", 1.0, 10),
+                process(20, Some(1), "codex", 1.0, 10),
+            ]),
+            now + Duration::from_secs(1),
+        );
+
+        assert_eq!(state.selected().unwrap().key, selected_key);
+        assert_eq!(state.selected_session, 2);
     }
 }

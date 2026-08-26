@@ -5,14 +5,13 @@ use crate::{
     constants,
     utils::input::InputFieldState,
     widgets::{
-        AgentWidgetState, BatteryWidgetState, CpuWidgetState, DiskIoGraphWidgetState,
-        DiskTableWidget, MemWidgetState, NetWidgetState, ProcWidgetState, TempGraphWidgetState,
-        TempWidgetState, query::ProcessQuery,
+        BatteryWidgetState, CpuWidgetState, DiskIoGraphWidgetState, DiskTableWidget,
+        MemWidgetState, NetWidgetState, ProcWidgetState, TempGraphWidgetState, TempWidgetState,
+        query::ProcessQuery,
     },
 };
 
 pub struct AppWidgetStates {
-    pub agent_state: AgentWidgetState,
     pub cpu_state: CpuState,
     pub mem_state: MemState,
     pub net_state: NetState,
