@@ -225,6 +225,17 @@ impl ProcessKillDialog {
         !(matches!(self.state, ProcessKillDialogState::NotEnabled))
     }
 
+    #[cfg(all(test, feature = "agent-monitor"))]
+    pub(crate) fn is_simple_yes_selected(&self) -> bool {
+        matches!(
+            &self.state,
+            ProcessKillDialogState::Selecting(ProcessKillSelectingInner {
+                button_state: ButtonState::Simple { yes: true, .. },
+                ..
+            })
+        )
+    }
+
     pub fn on_esc(&mut self) {
         self.reset();
     }

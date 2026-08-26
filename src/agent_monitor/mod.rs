@@ -44,6 +44,10 @@ impl AgentMonitor {
 
     pub(crate) fn increment_selection(&mut self, _amount: i64) {}
 
+    pub(crate) fn collapse_selected_session(&mut self) {}
+
+    pub(crate) fn expand_selected_session(&mut self) {}
+
     pub(crate) fn select_first(&mut self) {}
 
     pub(crate) fn select_last(&mut self) {}

@@ -657,8 +657,16 @@ impl App {
             self.help_dialog_state.search_input_state.move_left();
             return;
         }
+        if self.process_kill_dialog.is_open() {
+            self.process_kill_dialog.on_left_key();
+            return;
+        }
 
         if !self.is_in_dialog() {
+            if self.is_agent_view_active() {
+                self.agent_monitor.collapse_selected_session();
+                return;
+            }
             match self.current_widget.widget_type {
                 BottomWidgetType::Proc => {
                     if let Some(proc_widget_state) = self
@@ -698,8 +706,6 @@ impl App {
                 }
                 _ => {}
             }
-        } else if self.process_kill_dialog.is_open() {
-            self.process_kill_dialog.on_left_key();
         }
     }
 
@@ -708,8 +714,16 @@ impl App {
             self.help_dialog_state.search_input_state.move_right();
             return;
         }
+        if self.process_kill_dialog.is_open() {
+            self.process_kill_dialog.on_right_key();
+            return;
+        }
 
         if !self.is_in_dialog() {
+            if self.is_agent_view_active() {
+                self.agent_monitor.expand_selected_session();
+                return;
+            }
             match self.current_widget.widget_type {
                 BottomWidgetType::Proc => {
                     if let Some(proc_widget_state) = self
@@ -753,8 +767,6 @@ impl App {
                 }
                 _ => {}
             }
-        } else if self.process_kill_dialog.is_open() {
-            self.process_kill_dialog.on_right_key();
         }
     }
 

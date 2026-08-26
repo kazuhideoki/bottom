@@ -102,6 +102,7 @@ impl Painter {
         let state = &app_state.agent_monitor;
         let available_lines = area.height.saturating_sub(2) as usize;
         let mut rows = Vec::new();
+        let mut selected_row = 0;
 
         if state.snapshot.sessions.is_empty() {
             rows.push(AgentTreeRow::new(
@@ -111,8 +112,12 @@ impl Painter {
             ));
         } else {
             for (index, session) in state.snapshot.sessions.iter().enumerate() {
-                let selected = index == state.selected_session;
-                let marker = if selected { "▶" } else { " " };
+                let selected = state.is_session_selected(index);
+                let marker = if state.is_session_expanded(session.key) {
+                    "▾"
+                } else {
+                    "▸"
+                };
                 let warning = if session.zombie_count > 0 {
                     format!("  Z:{}", session.zombie_count)
                 } else {
@@ -136,11 +141,15 @@ impl Painter {
                         self.styles.text_style
                     },
                 ));
-
                 if selected {
+                    selected_row = rows.len() - 1;
+                }
+
+                if state.is_session_expanded(session.key) {
                     for process in session.processes.iter().skip(1) {
                         let indent = "  ".repeat(process.depth.saturating_sub(1));
                         let state_marker = if process.is_zombie() { " Z" } else { "" };
+                        let selected = state.is_process_selected(process.identity);
                         rows.push(AgentTreeRow::new(
                             AgentTreeRowKind::Process,
                             format!(
@@ -150,21 +159,27 @@ impl Painter {
                                 process.cpu_usage_percent,
                                 format_bytes(process.rss_bytes),
                             ),
-                            if process.is_zombie() {
+                            if selected {
+                                self.styles.selected_text_style
+                            } else if process.is_zombie() {
                                 self.styles.invalid_query_style
                             } else {
                                 self.styles.disabled_text_style
                             },
                         ));
+                        if selected {
+                            selected_row = rows.len() - 1;
+                        }
                     }
                 }
             }
         }
 
-        let selected_row = state.selected_session.min(rows.len().saturating_sub(1));
+        selected_row = selected_row.min(rows.len().saturating_sub(1));
         let viewport = agent_tree_viewport(rows.len(), selected_row, available_lines);
         let mut lines = Vec::with_capacity(available_lines);
-        if viewport.start > 0 {
+        let show_overflow_markers = show_agent_tree_overflow_markers(available_lines);
+        if show_overflow_markers && viewport.start > 0 {
             lines.push(Line::styled(
                 hidden_rows_label("↑", &rows[..viewport.start]),
                 self.styles.disabled_text_style,
@@ -175,7 +190,7 @@ impl Painter {
                 .iter()
                 .map(|row| row.line.clone()),
         );
-        if viewport.end < rows.len() {
+        if show_overflow_markers && viewport.end < rows.len() {
             lines.push(Line::styled(
                 hidden_rows_label("↓", &rows[viewport.end..]),
                 self.styles.disabled_text_style,
@@ -187,7 +202,7 @@ impl Painter {
             .border_type(self.styles.border_type)
             .border_style(self.styles.border_style)
             .title(Line::styled(
-                " Sessions / process tree (j/k) ",
+                " Tree (← close, → open, j/k move) ",
                 self.styles.widget_title_style,
             ));
         f.render_widget(
@@ -354,6 +369,10 @@ fn agent_tree_viewport(
     }
 }
 
+fn show_agent_tree_overflow_markers(available_lines: usize) -> bool {
+    available_lines >= 3
+}
+
 fn hidden_rows_label(direction: &str, rows: &[AgentTreeRow]) -> String {
     let sessions = rows
         .iter()
@@ -509,5 +528,15 @@ mod tests {
             agent_tree_viewport(10, 9, 6),
             AgentTreeViewport { start: 5, end: 10 }
         );
+    }
+
+    #[test]
+    fn agent_tree_keeps_selection_visible_without_markers_when_height_is_tiny() {
+        assert_eq!(
+            agent_tree_viewport(10, 9, 1),
+            AgentTreeViewport { start: 9, end: 10 }
+        );
+        assert!(!show_agent_tree_overflow_markers(1));
+        assert!(!show_agent_tree_overflow_markers(2));
     }
 }

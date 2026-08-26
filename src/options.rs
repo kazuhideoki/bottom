@@ -1755,6 +1755,19 @@ mod test {
 
     #[cfg(feature = "agent-monitor")]
     #[test]
+    fn process_kill_dialog_keeps_left_right_priority_over_agent_overlay() {
+        let mut app = create_app(BottomArgs::parse_from(["btm", "--agent"]));
+        app.process_kill_dialog
+            .start_process_kill("test".to_string(), vec![1], true);
+        assert!(!app.process_kill_dialog.is_simple_yes_selected());
+
+        app.on_left_key();
+
+        assert!(app.process_kill_dialog.is_simple_yes_selected());
+    }
+
+    #[cfg(feature = "agent-monitor")]
+    #[test]
     fn agent_shortcut_updates_collection_thread() {
         use std::sync::mpsc;
 
