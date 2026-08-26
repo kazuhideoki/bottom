@@ -607,6 +607,7 @@ pub(crate) fn init_app(args: BottomArgs, config: Config) -> Result<(App, BottomL
                     used_widget_set.insert(widget.widget_type.clone());
 
                     match widget.widget_type {
+                        Agent => {}
                         Cpu => {
                             cpu_state_map.insert(
                                 widget.widget_id,
@@ -753,6 +754,9 @@ pub(crate) fn init_app(args: BottomArgs, config: Config) -> Result<(App, BottomL
 
     let use_mem = used_widget_set.contains(&Mem) || used_widget_set.contains(&BasicMem);
     let used_widgets = UsedWidgets {
+        // The agent dashboard can be toggled from every layout, so process data
+        // must always be available even when there is no process widget.
+        use_agent: true,
         use_cpu: used_widget_set.contains(&Cpu) || used_widget_set.contains(&BasicCpu),
         use_mem,
         use_cache: use_mem && enable_cache_memory,
@@ -796,6 +800,7 @@ pub(crate) fn init_app(args: BottomArgs, config: Config) -> Result<(App, BottomL
     };
 
     let states = AppWidgetStates {
+        agent_state: AgentWidgetState::new(&app_config_fields),
         cpu_state: CpuState::init(cpu_state_map),
         mem_state: MemState::init(mem_state_map),
         net_state: NetState::init(net_state_map),
@@ -831,6 +836,7 @@ pub(crate) fn init_app(args: BottomArgs, config: Config) -> Result<(App, BottomL
             used_widgets,
             filters,
             is_expanded,
+            args.general.agent,
         ),
         widget_layout,
         styling,
@@ -1655,6 +1661,30 @@ mod test {
         super::init_app(args, config).unwrap().0
     }
 
+    #[test]
+    fn agent_flag_starts_in_agent_dashboard() {
+        let app = create_app(BottomArgs::parse_from(["btm", "--agent"]));
+        assert!(app.is_agent_mode);
+        assert!(app.used_widgets.use_agent);
+    }
+
+    #[test]
+    fn agent_is_valid_custom_layout_widget() {
+        let args = BottomArgs::parse_from(["btm"]);
+        let config = toml_edit::de::from_str::<Config>(
+            r#"
+                [[row]]
+                [[row.child]]
+                type = "agent"
+                default = true
+            "#,
+        )
+        .unwrap();
+        let app = super::init_app(args, config).unwrap().0;
+        assert_eq!(app.current_widget.widget_type, BottomWidgetType::Agent);
+        assert!(!app.is_agent_mode);
+    }
+
     // TODO: There's probably a better way to create clap options AND unify together
     // to avoid the possibility of typos/mixing up. Use proc macros to unify on
     // one struct?
@@ -1685,6 +1715,7 @@ mod test {
 
                 if (default_app.app_config_fields == testing_app.app_config_fields)
                     && default_app.is_expanded == testing_app.is_expanded
+                    && default_app.is_agent_mode == testing_app.is_agent_mode
                     && default_app
                         .states
                         .proc_state

@@ -928,6 +928,7 @@ impl BottomWidget {
 pub enum BottomWidgetType {
     #[default]
     Empty,
+    Agent,
     Cpu,
     CpuLegend,
     Mem,
@@ -949,7 +950,7 @@ pub enum BottomWidgetType {
 impl BottomWidgetType {
     pub fn is_widget_table(&self) -> bool {
         use BottomWidgetType::*;
-        matches!(self, Disk | Proc | ProcSort | Temp | CpuLegend)
+        matches!(self, Agent | Disk | Proc | ProcSort | Temp | CpuLegend)
     }
 
     pub fn is_widget_graph(&self) -> bool {
@@ -960,6 +961,7 @@ impl BottomWidgetType {
     pub fn get_pretty_name(&self) -> &str {
         use BottomWidgetType::*;
         match self {
+            Agent => "Agent Monitor",
             Cpu => "CPU",
             Mem => "Memory",
             Net => "Network",
@@ -979,6 +981,7 @@ impl std::str::FromStr for BottomWidgetType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let lower_case = s.to_lowercase();
         match lower_case.as_str() {
+            "agent" | "agents" => Ok(BottomWidgetType::Agent),
             "cpu" => Ok(BottomWidgetType::Cpu),
             "mem" | "memory" => Ok(BottomWidgetType::Mem),
             "net" | "network" => Ok(BottomWidgetType::Net),
@@ -999,6 +1002,8 @@ impl std::str::FromStr for BottomWidgetType {
 Supported widget names:
 +--------------------------------+
 |               cpu              |
++--------------------------------+
+|         agent, agents          |
 +--------------------------------+
 |           mem, memory          |
 +--------------------------------+
@@ -1030,6 +1035,8 @@ Supported widget names:
 +--------------------------------+
 |               cpu              |
 +--------------------------------+
+|         agent, agents          |
++--------------------------------+
 |           mem, memory          |
 +--------------------------------+
 |          net, network          |
@@ -1056,6 +1063,7 @@ Supported widget names:
 
 #[derive(Clone, Default, Debug, Copy)]
 pub struct UsedWidgets {
+    pub use_agent: bool,
     pub use_cpu: bool,
     pub use_mem: bool,
     pub use_cache: bool,

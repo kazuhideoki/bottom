@@ -130,6 +130,11 @@ pub struct ProcessHarvest {
     /// Cumulative process uptime.
     pub time: Duration,
 
+    /// An opaque process start token used with the PID to avoid PID reuse.
+    ///
+    /// The unit is platform-specific; callers should only compare it for equality.
+    pub start_time: u64,
+
     /// This is the *effective* user ID of the process. This is only used on
     /// Unix platforms.
     #[cfg(unix)]

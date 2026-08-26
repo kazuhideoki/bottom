@@ -420,6 +420,7 @@ pub fn start_bottom(enable_error_hook: &mut bool) -> anyhow::Result<()> {
                     try_drawing(&mut terminal, &mut app, &mut painter)?;
                 }
                 BottomEvent::Update(data) => {
+                    let collection_time = data.collection_time;
                     app.data_store.eat_data(data, &app.app_config_fields);
 
                     // This thing is required as otherwise, some widgets can't draw correctly w/o
@@ -430,6 +431,7 @@ pub fn start_bottom(enable_error_hook: &mut bool) -> anyhow::Result<()> {
                     }
 
                     if !app.data_store.is_frozen() {
+                        app.update_agent_data(collection_time);
                         // Convert all data into data for the displayed widgets.
 
                         if app.used_widgets.use_disk {
@@ -461,8 +463,9 @@ pub fn start_bottom(enable_error_hook: &mut bool) -> anyhow::Result<()> {
                     }
                 }
                 BottomEvent::Clean => {
-                    app.data_store
-                        .clean_data(Duration::from_millis(app.app_config_fields.retention_ms));
+                    let retention = Duration::from_millis(app.app_config_fields.retention_ms);
+                    app.data_store.clean_data(retention);
+                    app.prune_agent_data(retention);
                 }
             }
         }

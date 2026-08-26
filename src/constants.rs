@@ -26,12 +26,13 @@ const HELP_CONTENTS_TEXT: [&str; 12] = [
 ];
 
 // TODO [Help]: Move to using tables for easier formatting?
-pub(crate) const GENERAL_HELP_TEXT: [&str; 24] = [
+pub(crate) const GENERAL_HELP_TEXT: [&str; 25] = [
     "1 - General",
     "q, Q, Ctrl-c            Quit",
     "Esc                     Close dialog windows, search, widgets, or exit expanded mode",
     "Ctrl-r                  Reset display and any collected data",
     "f                       Freeze/unfreeze updating with new data",
+    "a                       Toggle the AI agent resource dashboard",
     "Shift/Ctrl-Left, H, A   Move widget selection left",
     "Shift/Ctrl-Right, L, D  Move widget selection right",
     "Shift/Ctrl-Up, K, W     Move widget selection up",
@@ -733,7 +734,7 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 # [[row.child]] represents either a widget or a column.
 # [[row.child.child]] represents a widget.
 #
-# All widgets must have the type value set to one of ["cpu", "mem", "proc", "net", "temp", "temp_graph", "disk", "empty"].
+# All widgets must have the type value set to one of ["agent", "cpu", "mem", "proc", "net", "temp", "temp_graph", "disk", "empty"].
 # All layout components have a ratio value - if this is not set, then it defaults to 1.
 # The default widget layout:
 #[[row]]

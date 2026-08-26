@@ -18,7 +18,7 @@ pub struct ProcessData {
 }
 
 impl ProcessData {
-    pub(super) fn ingest(&mut self, list_of_processes: Vec<ProcessHarvest>) {
+    pub(crate) fn ingest(&mut self, list_of_processes: Vec<ProcessHarvest>) {
         self.process_parent_mapping.clear();
 
         // Reverse as otherwise the pid mappings are in the wrong order.

@@ -95,6 +95,14 @@ pub struct GeneralArgs {
     #[arg(
         long,
         action = ArgAction::SetTrue,
+        help = "Starts in the AI agent resource dashboard.",
+        long_help = "Starts in the AI agent resource dashboard. Press 'a' to return to the normal view."
+    )]
+    pub agent: bool,
+
+    #[arg(
+        long,
+        action = ArgAction::SetTrue,
         help = "Temporarily shows the time scale in graphs.",
         long_help = "Automatically hides the time scale in graphs after being shown for a brief moment when zoomed \
                 in/out. If time is disabled using --hide_time then this will have no effect.",
@@ -180,6 +188,8 @@ pub struct GeneralArgs {
             Then, setting '--default_widget_type temperature' will make the temperature widget selected by default."
         },
         value_parser = [
+            "agent",
+            "agents",
             "cpu",
             "mem",
             "net",

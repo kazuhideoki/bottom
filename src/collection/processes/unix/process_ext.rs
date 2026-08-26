@@ -157,6 +157,7 @@ pub(crate) trait UnixProcessExt {
                 } else {
                     Duration::from_secs(process_val.run_time())
                 },
+                start_time: process_val.start_time(),
                 #[cfg(feature = "gpu")]
                 gpu_mem: 0,
                 #[cfg(feature = "gpu")]

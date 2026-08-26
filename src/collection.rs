@@ -312,11 +312,17 @@ impl DataCollector {
         // Refresh the list of objects once every minute. If it's too frequent it can
         // cause segfaults.
 
-        if self.widgets_to_harvest.use_cpu || self.widgets_to_harvest.use_proc {
+        if self.widgets_to_harvest.use_cpu
+            || self.widgets_to_harvest.use_proc
+            || self.widgets_to_harvest.use_agent
+        {
             self.sys.system.refresh_cpu_all();
         }
 
-        if self.widgets_to_harvest.use_mem || self.widgets_to_harvest.use_proc {
+        if self.widgets_to_harvest.use_mem
+            || self.widgets_to_harvest.use_proc
+            || self.widgets_to_harvest.use_agent
+        {
             self.sys.system.refresh_memory();
         }
 
@@ -330,7 +336,7 @@ impl DataCollector {
         // - Temperatures and temperature components list.
         #[cfg(not(target_os = "linux"))]
         {
-            if self.widgets_to_harvest.use_proc {
+            if self.widgets_to_harvest.use_proc || self.widgets_to_harvest.use_agent {
                 self.sys.system.refresh_processes_specifics(
                     sysinfo::ProcessesToUpdate::All,
                     true,
@@ -476,7 +482,7 @@ impl DataCollector {
 
     #[inline]
     fn update_processes(&mut self) {
-        if self.widgets_to_harvest.use_proc
+        if (self.widgets_to_harvest.use_proc || self.widgets_to_harvest.use_agent)
             && let Ok(mut process_list) = self.get_processes()
         {
             // NB: To avoid duplicate sorts on rerenders/events, we sort the processes by
