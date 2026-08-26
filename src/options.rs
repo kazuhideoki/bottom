@@ -31,6 +31,7 @@ use self::{
     config::{IgnoreList, StringOrNum, layout::Row},
 };
 use crate::{
+    agent_monitor::AgentMonitor,
     app::{filter::Filter, layout_manager::*, *},
     canvas::components::time_series::LegendPosition,
     components::time_series::TimeseriesConfig,
@@ -607,6 +608,8 @@ pub(crate) fn init_app(args: BottomArgs, config: Config) -> Result<(App, BottomL
                     used_widget_set.insert(widget.widget_type.clone());
 
                     match widget.widget_type {
+                        #[cfg(feature = "agent-monitor")]
+                        Agent => {}
                         Cpu => {
                             cpu_state_map.insert(
                                 widget.widget_id,
@@ -751,8 +754,26 @@ pub(crate) fn init_app(args: BottomArgs, config: Config) -> Result<(App, BottomL
         None
     };
 
+    let agent_layout_present = {
+        #[cfg(feature = "agent-monitor")]
+        {
+            used_widget_set.contains(&Agent)
+        }
+
+        #[cfg(not(feature = "agent-monitor"))]
+        {
+            false
+        }
+    };
+    let agent_monitor = AgentMonitor::new(
+        &app_config_fields,
+        args.general.agent_enabled(),
+        agent_layout_present,
+    );
     let use_mem = used_widget_set.contains(&Mem) || used_widget_set.contains(&BasicMem);
     let used_widgets = UsedWidgets {
+        #[cfg(feature = "agent-monitor")]
+        use_agent: agent_monitor.collection_enabled(),
         use_cpu: used_widget_set.contains(&Cpu) || used_widget_set.contains(&BasicCpu),
         use_mem,
         use_cache: use_mem && enable_cache_memory,
@@ -831,6 +852,7 @@ pub(crate) fn init_app(args: BottomArgs, config: Config) -> Result<(App, BottomL
             used_widgets,
             filters,
             is_expanded,
+            agent_monitor,
         ),
         widget_layout,
         styling,
@@ -1655,6 +1677,140 @@ mod test {
         super::init_app(args, config).unwrap().0
     }
 
+    #[cfg(not(feature = "agent-monitor"))]
+    #[test]
+    fn agent_monitor_surface_is_absent_without_feature() {
+        assert!(BottomArgs::try_parse_from(["btm", "--agent"]).is_err());
+        assert!("agent".parse::<BottomWidgetType>().is_err());
+        assert!(
+            !crate::constants::GENERAL_HELP_TEXT
+                .iter()
+                .any(|line| line.contains("AI agent resource dashboard"))
+        );
+    }
+
+    #[cfg(feature = "agent-monitor")]
+    #[test]
+    fn agent_flag_starts_in_agent_dashboard() {
+        let app = create_app(BottomArgs::parse_from(["btm", "--agent"]));
+        assert!(app.agent_monitor.is_overlay_active());
+        assert!(app.used_widgets.use_agent);
+    }
+
+    #[cfg(feature = "agent-monitor")]
+    #[test]
+    fn agent_collection_is_disabled_for_a_normal_layout() {
+        let app = create_app(BottomArgs::parse_from(["btm"]));
+        assert!(!app.agent_monitor.collection_enabled());
+        assert!(!app.used_widgets.use_agent);
+    }
+
+    #[cfg(feature = "agent-monitor")]
+    #[test]
+    fn agent_is_valid_custom_layout_widget() {
+        let args = BottomArgs::parse_from(["btm"]);
+        let config = toml_edit::de::from_str::<Config>(
+            r#"
+                [[row]]
+                [[row.child]]
+                type = "agent"
+                default = true
+            "#,
+        )
+        .unwrap();
+        let app = super::init_app(args, config).unwrap().0;
+        assert_eq!(app.current_widget.widget_type, BottomWidgetType::Agent);
+        assert!(!app.agent_monitor.is_overlay_active());
+        assert!(app.agent_monitor.collection_enabled());
+        assert!(app.used_widgets.use_agent);
+    }
+
+    #[cfg(feature = "agent-monitor")]
+    #[test]
+    fn agent_overlay_toggles_with_a_and_closes_with_escape() {
+        let mut app = create_app(BottomArgs::parse_from(["btm"]));
+        assert!(!app.agent_monitor.is_overlay_active());
+
+        app.on_char_key('a');
+        assert!(app.agent_monitor.is_overlay_active());
+
+        app.on_esc();
+        assert!(!app.agent_monitor.is_overlay_active());
+    }
+
+    #[cfg(feature = "agent-monitor")]
+    #[test]
+    fn escape_closes_visible_help_before_agent_overlay() {
+        let mut app = create_app(BottomArgs::parse_from(["btm"]));
+        app.on_char_key('a');
+        app.on_char_key('?');
+        assert!(app.agent_monitor.is_overlay_active());
+        assert!(app.help_dialog_state.is_showing_help);
+
+        app.on_esc();
+
+        assert!(app.agent_monitor.is_overlay_active());
+        assert!(!app.help_dialog_state.is_showing_help);
+    }
+
+    #[cfg(feature = "agent-monitor")]
+    #[test]
+    fn agent_shortcut_updates_collection_thread() {
+        use std::sync::mpsc;
+
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = create_app(BottomArgs::parse_from(["btm"]));
+        let (sender, receiver) = mpsc::channel();
+
+        crate::event::handle_key_event_or_break(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            &mut app,
+            &sender,
+        );
+        assert_eq!(
+            receiver.try_recv(),
+            Ok(crate::event::CollectionThreadEvent::SetAgentEnabled(true))
+        );
+        assert!(app.used_widgets.use_agent);
+
+        crate::event::handle_key_event_or_break(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut app,
+            &sender,
+        );
+        assert_eq!(
+            receiver.try_recv(),
+            Ok(crate::event::CollectionThreadEvent::SetAgentEnabled(false))
+        );
+        assert!(!app.used_widgets.use_agent);
+    }
+
+    #[cfg(feature = "agent-monitor")]
+    #[test]
+    fn agent_shortcut_does_not_capture_process_search_input() {
+        let mut app = create_app(BottomArgs::parse_from([
+            "btm",
+            "--default_widget_type",
+            "proc",
+        ]));
+        app.on_slash();
+        assert_eq!(app.current_widget.widget_type, BottomWidgetType::ProcSearch);
+
+        app.on_char_key('a');
+
+        assert!(!app.agent_monitor.is_overlay_active());
+        let search = &app
+            .states
+            .proc_state
+            .widget_states
+            .get(&(app.current_widget.widget_id - 1))
+            .unwrap()
+            .proc_search
+            .search_state;
+        assert_eq!(search.input_field_state.current_query(), "a");
+    }
+
     // TODO: There's probably a better way to create clap options AND unify together
     // to avoid the possibility of typos/mixing up. Use proc macros to unify on
     // one struct?
@@ -1685,6 +1841,8 @@ mod test {
 
                 if (default_app.app_config_fields == testing_app.app_config_fields)
                     && default_app.is_expanded == testing_app.is_expanded
+                    && default_app.agent_monitor.is_overlay_active()
+                        == testing_app.agent_monitor.is_overlay_active()
                     && default_app
                         .states
                         .proc_state

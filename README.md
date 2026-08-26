@@ -85,6 +85,10 @@ As (yet another) process/system visualization and management application, bottom
   - [Kill signals](https://bottom.pages.dev/nightly/usage/widgets/process/#process-termination)
   - [Tree mode](https://bottom.pages.dev/nightly/usage/widgets/process/#tree-mode)
 
+- An agent resource dashboard (`btm --agent`, or `a` to toggle) that groups
+  Codex and Claude sessions with their descendant process trees, CPU/aggregate
+  RSS histories, and cleanup warning signals.
+
 - [Cross-platform support](https://github.com/ClementTsang/bottom#support) for Linux, macOS, and Windows, with more planned in the future.
 
 - [Customizable behaviour](https://bottom.pages.dev/nightly/configuration/command-line-options/) that can be controlled with command-line options or a config file, such as:

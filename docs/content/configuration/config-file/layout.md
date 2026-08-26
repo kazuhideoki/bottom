@@ -50,8 +50,14 @@ The following `type` values are supported:
 | `"disk"`                            | Disk table               |
 | `"empty"`                           | An empty space           |
 | `"batt", "battery"`                 | Battery statistics       |
+| `"agent", "agents"`                | Codex/Claude agent monitor |
 
 Each component of the layout accepts a `ratio` value. If this is not set, it defaults to 1.
+
+The agent monitor groups detected Codex and Claude roots with all descendants,
+shows per-session CPU and aggregate RSS histories, and surfaces zombie,
+detached-descendant, and sustained RSS-growth signals. Press `a` from the normal
+layout to toggle the same dashboard full-screen, or start there with `btm --agent`.
 
 Furthermore, you can have duplicate widgets.
 

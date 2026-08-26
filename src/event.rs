@@ -22,9 +22,11 @@ pub enum BottomEvent {
 }
 
 /// Events sent to the collection thread.
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum CollectionThreadEvent {
     Reset,
+    #[cfg(feature = "agent-monitor")]
+    SetAgentEnabled(bool),
 }
 
 /// Handle a [`MouseEvent`].
@@ -51,9 +53,11 @@ pub fn handle_mouse_event(event: MouseEvent, app: &mut App) {
 
 /// Handle a [`KeyEvent`].
 pub fn handle_key_event_or_break(
-    event: KeyEvent, app: &mut App, reset_sender: &Sender<CollectionThreadEvent>,
+    event: KeyEvent, app: &mut App, control_sender: &Sender<CollectionThreadEvent>,
 ) -> bool {
     // c_debug!("KeyEvent: {event:?}");
+    #[cfg(feature = "agent-monitor")]
+    let agent_collection_before = app.is_agent_collection_enabled();
 
     if event.modifiers.is_empty() {
         match event.code {
@@ -103,7 +107,7 @@ pub fn handle_key_event_or_break(
                 KeyCode::Right => app.move_widget_selection(&WidgetDirection::Right),
                 KeyCode::Up => app.move_widget_selection(&WidgetDirection::Up),
                 KeyCode::Down => app.move_widget_selection(&WidgetDirection::Down),
-                KeyCode::Char('r') if reset_sender.send(CollectionThreadEvent::Reset).is_ok() => {
+                KeyCode::Char('r') if control_sender.send(CollectionThreadEvent::Reset).is_ok() => {
                     app.reset();
                 }
                 KeyCode::Char('a') => app.skip_cursor_beginning(),
@@ -132,6 +136,17 @@ pub fn handle_key_event_or_break(
                 KeyCode::Char(caught_char) => app.on_char_key(caught_char),
                 _ => {}
             }
+        }
+    }
+
+    #[cfg(feature = "agent-monitor")]
+    {
+        let agent_collection_after = app.is_agent_collection_enabled();
+        if agent_collection_before != agent_collection_after {
+            app.used_widgets.set_agent_enabled(agent_collection_after);
+            let _ = control_sender.send(CollectionThreadEvent::SetAgentEnabled(
+                agent_collection_after,
+            ));
         }
     }
 

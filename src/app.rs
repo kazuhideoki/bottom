@@ -12,6 +12,7 @@ use rustc_hash::FxHashMap as HashMap;
 pub use states::*;
 
 use crate::{
+    agent_monitor::AgentMonitor,
     canvas::{
         components::{data_table::SortOrder, time_series::LegendPosition},
         dialogs::process_kill_dialog::ProcessKillDialog,
@@ -108,6 +109,7 @@ pub struct App {
     last_key_press: Instant,
     pub(crate) process_kill_dialog: ProcessKillDialog,
     pub help_dialog_state: AppHelpDialogState,
+    pub(crate) agent_monitor: AgentMonitor,
     pub is_expanded: bool,
     pub is_force_redraw: bool,
     pub is_determining_widget_boundary: bool,
@@ -122,10 +124,11 @@ pub struct App {
 
 impl App {
     /// Create a new [`App`].
-    pub fn new(
+    pub(crate) fn new(
         app_config_fields: AppConfigFields, states: AppWidgetStates,
         widget_map: HashMap<u64, BottomWidget>, current_widget: BottomWidget,
         used_widgets: UsedWidgets, filters: DataFilters, is_expanded: bool,
+        agent_monitor: AgentMonitor,
     ) -> Self {
         let mut data_store = DataStore::new(used_widgets);
         data_store.set_filters(filters.clone());
@@ -137,6 +140,7 @@ impl App {
             last_key_press: Instant::now(),
             process_kill_dialog: ProcessKillDialog::default(),
             help_dialog_state: AppHelpDialogState::default(),
+            agent_monitor,
             is_expanded,
             is_force_redraw: false,
             is_determining_widget_boundary: false,
@@ -183,6 +187,42 @@ impl App {
         }
     }
 
+    /// Update the derived AI-agent view from the latest process snapshot.
+    pub fn update_agent_data(&mut self, at: Instant) {
+        let process_data = &self.data_store.get_data().process_data;
+        self.agent_monitor.refresh(process_data, at);
+    }
+
+    pub fn prune_agent_data(&mut self, max_age: std::time::Duration) {
+        self.agent_monitor.prune(max_age);
+    }
+
+    pub fn is_agent_view_active(&self) -> bool {
+        if self.agent_monitor.is_overlay_active() {
+            return true;
+        }
+
+        #[cfg(feature = "agent-monitor")]
+        {
+            self.current_widget.widget_type == BottomWidgetType::Agent
+        }
+
+        #[cfg(not(feature = "agent-monitor"))]
+        {
+            false
+        }
+    }
+
+    pub(crate) fn is_agent_collection_enabled(&self) -> bool {
+        self.agent_monitor.collection_enabled()
+    }
+
+    pub fn toggle_agent_view(&mut self) {
+        self.agent_monitor.toggle_overlay();
+        self.is_force_redraw = true;
+        self.reset_multi_tap_keys();
+    }
+
     pub fn reset(&mut self) {
         // Reset multi
         self.reset_multi_tap_keys();
@@ -201,6 +241,7 @@ impl App {
             });
 
         self.data_store.reset();
+        self.agent_monitor.reset();
 
         // Reset zoom.
         // TODO: Make this suck less... should just make it so that calling reset fixes this all (including above too).
@@ -240,6 +281,8 @@ impl App {
                 self.help_dialog_state.scroll_state.current_scroll_index = 0;
                 self.is_force_redraw = true;
             }
+        } else if self.agent_monitor.close_overlay() {
+            self.is_force_redraw = true;
         } else {
             match self.current_widget.widget_type {
                 BottomWidgetType::Proc => {
@@ -737,6 +780,8 @@ impl App {
             let current = &mut self.help_dialog_state.scroll_state.current_scroll_index;
             let amount = self.help_dialog_state.height;
             *current = current.saturating_sub(amount);
+        } else if self.is_agent_view_active() {
+            self.agent_monitor.increment_selection(-5);
         } else if self.current_widget.widget_type.is_widget_table()
             && let (Some((_tlc_x, tlc_y)), Some((_brc_x, brc_y))) = (
                 &self.current_widget.top_left_corner,
@@ -758,6 +803,8 @@ impl App {
             let amount = self.help_dialog_state.height;
 
             self.help_scroll_to_or_max(current + amount);
+        } else if self.is_agent_view_active() {
+            self.agent_monitor.increment_selection(5);
         } else if self.current_widget.widget_type.is_widget_table()
             && let (Some((_tlc_x, tlc_y)), Some((_brc_x, brc_y))) = (
                 &self.current_widget.top_left_corner,
@@ -1021,6 +1068,8 @@ impl App {
     // FIXME: Refactor this system...
     fn handle_char(&mut self, caught_char: char) {
         match caught_char {
+            #[cfg(feature = "agent-monitor")]
+            'a' => self.toggle_agent_view(),
             '/' => {
                 self.on_slash();
             }
@@ -1706,6 +1755,11 @@ impl App {
 
     pub fn skip_to_first(&mut self) {
         if !self.ignore_normal_keybinds() {
+            if self.is_agent_view_active() {
+                self.agent_monitor.select_first();
+                self.reset_multi_tap_keys();
+                return;
+            }
             match self.current_widget.widget_type {
                 BottomWidgetType::Proc => {
                     if let Some(proc_widget_state) = self
@@ -1765,6 +1819,11 @@ impl App {
 
     pub fn skip_to_last(&mut self) {
         if !self.ignore_normal_keybinds() {
+            if self.is_agent_view_active() {
+                self.agent_monitor.select_last();
+                self.reset_multi_tap_keys();
+                return;
+            }
             match self.current_widget.widget_type {
                 BottomWidgetType::Proc => {
                     if let Some(proc_widget_state) = self
@@ -1833,6 +1892,10 @@ impl App {
 
     fn change_position_count(&mut self, amount: i64) {
         if !self.ignore_normal_keybinds() {
+            if self.is_agent_view_active() {
+                self.agent_monitor.increment_selection(amount);
+                return;
+            }
             match self.current_widget.widget_type {
                 BottomWidgetType::Proc => {
                     self.change_process_position(amount);
@@ -1932,6 +1995,8 @@ impl App {
             self.process_kill_dialog.on_scroll_up();
         } else if self.help_dialog_state.is_showing_help {
             self.help_scroll_up();
+        } else if self.is_agent_view_active() {
+            self.agent_monitor.increment_selection(-1);
         } else if self.current_widget.widget_type.is_widget_graph() {
             self.zoom_in();
         } else if self.current_widget.widget_type.is_widget_table() {
@@ -1944,6 +2009,8 @@ impl App {
             self.process_kill_dialog.on_scroll_down();
         } else if self.help_dialog_state.is_showing_help {
             self.help_scroll_down();
+        } else if self.is_agent_view_active() {
+            self.agent_monitor.increment_selection(1);
         } else if self.current_widget.widget_type.is_widget_graph() {
             self.zoom_out();
         } else if self.current_widget.widget_type.is_widget_table() {

@@ -924,10 +924,18 @@ impl BottomWidget {
     }
 }
 
+#[cfg(feature = "agent-monitor")]
+const AGENT_WIDGET_HELP: &str =
+    "|         agent, agents          |\n+--------------------------------+\n";
+#[cfg(not(feature = "agent-monitor"))]
+const AGENT_WIDGET_HELP: &str = "";
+
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub enum BottomWidgetType {
     #[default]
     Empty,
+    #[cfg(feature = "agent-monitor")]
+    Agent,
     Cpu,
     CpuLegend,
     Mem,
@@ -949,7 +957,12 @@ pub enum BottomWidgetType {
 impl BottomWidgetType {
     pub fn is_widget_table(&self) -> bool {
         use BottomWidgetType::*;
-        matches!(self, Disk | Proc | ProcSort | Temp | CpuLegend)
+        match self {
+            Disk | Proc | ProcSort | Temp | CpuLegend => true,
+            #[cfg(feature = "agent-monitor")]
+            Agent => true,
+            _ => false,
+        }
     }
 
     pub fn is_widget_graph(&self) -> bool {
@@ -960,6 +973,8 @@ impl BottomWidgetType {
     pub fn get_pretty_name(&self) -> &str {
         use BottomWidgetType::*;
         match self {
+            #[cfg(feature = "agent-monitor")]
+            Agent => "Agent Monitor",
             Cpu => "CPU",
             Mem => "Memory",
             Net => "Network",
@@ -979,6 +994,8 @@ impl std::str::FromStr for BottomWidgetType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let lower_case = s.to_lowercase();
         match lower_case.as_str() {
+            #[cfg(feature = "agent-monitor")]
+            "agent" | "agents" => Ok(BottomWidgetType::Agent),
             "cpu" => Ok(BottomWidgetType::Cpu),
             "mem" | "memory" => Ok(BottomWidgetType::Mem),
             "net" | "network" => Ok(BottomWidgetType::Net),
@@ -1000,7 +1017,7 @@ Supported widget names:
 +--------------------------------+
 |               cpu              |
 +--------------------------------+
-|           mem, memory          |
+{AGENT_WIDGET_HELP}|           mem, memory          |
 +--------------------------------+
 |          net, network          |
 +--------------------------------+
@@ -1030,7 +1047,7 @@ Supported widget names:
 +--------------------------------+
 |               cpu              |
 +--------------------------------+
-|           mem, memory          |
+{AGENT_WIDGET_HELP}|           mem, memory          |
 +--------------------------------+
 |          net, network          |
 +--------------------------------+
@@ -1056,6 +1073,8 @@ Supported widget names:
 
 #[derive(Clone, Default, Debug, Copy)]
 pub struct UsedWidgets {
+    #[cfg(feature = "agent-monitor")]
+    pub use_agent: bool,
     pub use_cpu: bool,
     pub use_mem: bool,
     pub use_cache: bool,
@@ -1067,4 +1086,35 @@ pub struct UsedWidgets {
     pub use_temp_graph: bool,
     pub use_disk_io_graph: bool,
     pub use_battery: bool,
+}
+
+impl UsedWidgets {
+    pub(crate) fn is_agent_enabled(&self) -> bool {
+        #[cfg(feature = "agent-monitor")]
+        {
+            self.use_agent
+        }
+
+        #[cfg(not(feature = "agent-monitor"))]
+        {
+            false
+        }
+    }
+
+    #[cfg(feature = "agent-monitor")]
+    pub(crate) fn set_agent_enabled(&mut self, enabled: bool) {
+        self.use_agent = enabled;
+    }
+
+    pub(crate) fn uses_cpu_data(&self) -> bool {
+        self.use_cpu || self.use_proc || self.is_agent_enabled()
+    }
+
+    pub(crate) fn uses_memory_data(&self) -> bool {
+        self.use_mem || self.use_proc || self.is_agent_enabled()
+    }
+
+    pub(crate) fn uses_process_data(&self) -> bool {
+        self.use_proc || self.is_agent_enabled()
+    }
 }

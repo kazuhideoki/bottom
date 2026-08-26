@@ -53,4 +53,11 @@ impl ProcessData {
             })
             .collect();
     }
+
+    #[cfg(all(test, feature = "agent-monitor"))]
+    pub(crate) fn from_harvest_for_test(list_of_processes: Vec<ProcessHarvest>) -> Self {
+        let mut data = Self::default();
+        data.ingest(list_of_processes);
+        data
+    }
 }

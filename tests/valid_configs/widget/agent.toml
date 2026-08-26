@@ -1,0 +1,4 @@
+[[row]]
+  [[row.child]]
+  type = "agent"
+  default = true

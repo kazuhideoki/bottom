@@ -223,6 +223,11 @@ impl Painter {
                 app_state
                     .process_kill_dialog
                     .draw(f, dialog_draw_area, &self.styles);
+            } else if app_state.agent_monitor.is_overlay_active() {
+                if let Some(frozen_draw_loc) = frozen_draw_loc {
+                    self.draw_frozen_indicator(f, frozen_draw_loc);
+                }
+                self.draw_agent_dashboard(f, app_state, terminal_size, 0, true);
             } else if app_state.is_expanded {
                 if let Some(frozen_draw_loc) = frozen_draw_loc {
                     self.draw_frozen_indicator(f, frozen_draw_loc);
@@ -233,6 +238,14 @@ impl Painter {
                     .constraints([Constraint::Percentage(100)])
                     .split(terminal_size);
                 match &app_state.current_widget.widget_type {
+                    #[cfg(feature = "agent-monitor")]
+                    Agent => self.draw_agent_dashboard(
+                        f,
+                        app_state,
+                        rect[0],
+                        app_state.current_widget.widget_id,
+                        false,
+                    ),
                     Cpu => self.draw_cpu(f, app_state, rect[0], app_state.current_widget.widget_id),
                     CpuLegend => self.draw_cpu(
                         f,
@@ -484,6 +497,10 @@ impl Painter {
         for (widget, draw_loc) in widgets.children.iter().zip(widget_draw_locs) {
             if draw_loc.width >= 2 && draw_loc.height >= 2 {
                 match &widget.widget_type {
+                    #[cfg(feature = "agent-monitor")]
+                    Agent => {
+                        self.draw_agent_dashboard(f, app_state, *draw_loc, widget.widget_id, false)
+                    }
                     Cpu => self.draw_cpu(f, app_state, *draw_loc, widget.widget_id),
                     Mem => self.draw_memory_graph(f, app_state, *draw_loc, widget.widget_id),
                     Net => self.draw_network(f, app_state, *draw_loc, widget.widget_id),
