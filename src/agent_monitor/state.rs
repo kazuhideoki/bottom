@@ -177,6 +177,8 @@ pub(crate) struct AgentMonitor {
     layout_present: bool,
     pub(super) snapshot: AgentSnapshot,
     pub(super) selected_session: usize,
+    selected_process: Option<ProcessIdentity>,
+    expanded_sessions: HashSet<AgentSessionKey>,
     pub(super) histories: HashMap<AgentSessionKey, AgentHistory>,
     pub(super) cpu_graph: AutoYAxisTimeGraph,
     pub(super) rss_graph: AutoYAxisTimeGraph,
@@ -211,6 +213,8 @@ impl AgentMonitor {
             layout_present,
             snapshot: AgentSnapshot::default(),
             selected_session: 0,
+            selected_process: None,
+            expanded_sessions: HashSet::new(),
             histories: HashMap::new(),
             cpu_graph: AutoYAxisTimeGraph::new(graph_config, None),
             rss_graph: AutoYAxisTimeGraph::new(graph_config, None),
@@ -241,6 +245,8 @@ impl AgentMonitor {
     pub fn reset(&mut self) {
         self.snapshot = AgentSnapshot::default();
         self.selected_session = 0;
+        self.selected_process = None;
+        self.expanded_sessions.clear();
         self.histories.clear();
         self.previous_owner.clear();
         self.known_providers.clear();
@@ -253,6 +259,7 @@ impl AgentMonitor {
 
     pub fn refresh(&mut self, process_data: &ProcessData, at: Instant) {
         let selected_key = self.selected().map(|session| session.key);
+        let selected_process = self.selected_process;
         let identities = self.refresh_process_identities(process_data, at);
         let provider_by_pid = process_data
             .process_harvest
@@ -379,6 +386,22 @@ impl AgentMonitor {
                 self.selected_session
                     .min(self.snapshot.sessions.len().saturating_sub(1))
             });
+        self.expanded_sessions.retain(|key| {
+            self.snapshot
+                .sessions
+                .iter()
+                .any(|session| session.key == *key)
+        });
+        self.selected_process = selected_process.filter(|identity| {
+            self.selected().is_some_and(|session| {
+                self.expanded_sessions.contains(&session.key)
+                    && session
+                        .processes
+                        .iter()
+                        .skip(1)
+                        .any(|process| process.identity == *identity)
+            })
+        });
     }
 
     pub fn prune(&mut self, max_age: Duration) {
@@ -440,29 +463,92 @@ impl AgentMonitor {
         self.snapshot.sessions.get(self.selected_session)
     }
 
-    pub fn increment_selection(&mut self, amount: i64) {
-        let len = self.snapshot.sessions.len();
-        if len == 0 {
-            self.selected_session = 0;
+    pub(super) fn is_session_expanded(&self, key: AgentSessionKey) -> bool {
+        self.expanded_sessions.contains(&key)
+    }
+
+    pub(super) fn is_process_selected(&self, identity: ProcessIdentity) -> bool {
+        self.selected_process == Some(identity)
+    }
+
+    pub(super) fn is_session_selected(&self, index: usize) -> bool {
+        self.selected_session == index && self.selected_process.is_none()
+    }
+
+    #[cfg(test)]
+    fn is_selected_session_expanded(&self) -> bool {
+        self.selected()
+            .is_some_and(|session| self.is_session_expanded(session.key))
+    }
+
+    pub(crate) fn expand_selected_session(&mut self) {
+        if self.selected_process.is_none()
+            && let Some(key) = self.selected().map(|session| session.key)
+        {
+            self.expanded_sessions.insert(key);
+        }
+    }
+
+    pub(crate) fn collapse_selected_session(&mut self) {
+        if self.selected_process.take().is_some() {
             return;
         }
+        if let Some(key) = self.selected().map(|session| session.key) {
+            self.expanded_sessions.remove(&key);
+        }
+    }
 
-        self.selected_session = if amount.is_negative() {
-            self.selected_session
-                .saturating_sub(amount.unsigned_abs() as usize)
+    fn visible_selection(&self) -> Vec<(usize, Option<ProcessIdentity>)> {
+        let mut rows = Vec::new();
+        for (session_index, session) in self.snapshot.sessions.iter().enumerate() {
+            rows.push((session_index, None));
+            if self.is_session_expanded(session.key) {
+                rows.extend(
+                    session
+                        .processes
+                        .iter()
+                        .skip(1)
+                        .map(|process| (session_index, Some(process.identity))),
+                );
+            }
+        }
+        rows
+    }
+
+    #[cfg(test)]
+    fn selected_process_pid(&self) -> Option<Pid> {
+        self.selected_process.map(|identity| identity.pid)
+    }
+
+    pub fn increment_selection(&mut self, amount: i64) {
+        let rows = self.visible_selection();
+        if rows.is_empty() {
+            self.selected_session = 0;
+            self.selected_process = None;
+            return;
+        }
+        let current = rows
+            .iter()
+            .position(|(session, process)| {
+                *session == self.selected_session && *process == self.selected_process
+            })
+            .unwrap_or(0);
+        let next = if amount.is_negative() {
+            current.saturating_sub(amount.unsigned_abs() as usize)
         } else {
-            self.selected_session
-                .saturating_add(amount as usize)
-                .min(len - 1)
+            current.saturating_add(amount as usize).min(rows.len() - 1)
         };
+        (self.selected_session, self.selected_process) = rows[next];
     }
 
     pub fn select_first(&mut self) {
         self.selected_session = 0;
+        self.selected_process = None;
     }
 
     pub fn select_last(&mut self) {
         self.selected_session = self.snapshot.sessions.len().saturating_sub(1);
+        self.selected_process = None;
     }
 }
 
@@ -847,5 +933,68 @@ mod tests {
 
         assert_eq!(state.selected().unwrap().key, selected_key);
         assert_eq!(state.selected_session, 2);
+    }
+
+    #[test]
+    fn process_trees_start_collapsed_and_expand_on_request() {
+        let mut state = AgentMonitor::new(&config(), false, false);
+        state.refresh(
+            &process_data(vec![
+                process(10, Some(1), "codex", 1.0, 10),
+                process(11, Some(10), "node", 1.0, 10),
+            ]),
+            Instant::now(),
+        );
+
+        assert!(!state.is_selected_session_expanded());
+        state.expand_selected_session();
+        assert!(state.is_selected_session_expanded());
+    }
+
+    #[test]
+    fn expanded_process_rows_are_reachable_with_tree_navigation() {
+        let mut state = AgentMonitor::new(&config(), false, false);
+        state.refresh(
+            &process_data(vec![
+                process(10, Some(1), "codex", 1.0, 10),
+                process(11, Some(10), "node", 1.0, 10),
+                process(12, Some(11), "cargo", 1.0, 10),
+                process(20, Some(1), "claude", 1.0, 10),
+            ]),
+            Instant::now(),
+        );
+
+        state.expand_selected_session();
+        state.increment_selection(2);
+
+        assert_eq!(state.selected_session, 0);
+        assert_eq!(state.selected_process_pid(), Some(12));
+
+        state.increment_selection(1);
+        assert_eq!(state.selected_session, 1);
+        assert_eq!(state.selected_process_pid(), None);
+    }
+
+    #[test]
+    fn left_from_a_process_returns_to_its_session_then_collapses_it() {
+        let mut state = AgentMonitor::new(&config(), false, false);
+        state.refresh(
+            &process_data(vec![
+                process(10, Some(1), "codex", 1.0, 10),
+                process(11, Some(10), "node", 1.0, 10),
+            ]),
+            Instant::now(),
+        );
+
+        state.expand_selected_session();
+        state.increment_selection(1);
+        assert_eq!(state.selected_process_pid(), Some(11));
+
+        state.collapse_selected_session();
+        assert_eq!(state.selected_process_pid(), None);
+        assert!(state.is_selected_session_expanded());
+
+        state.collapse_selected_session();
+        assert!(!state.is_selected_session_expanded());
     }
 }
