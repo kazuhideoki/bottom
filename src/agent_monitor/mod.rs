@@ -1,6 +1,8 @@
 //! Codex/Claude process monitoring boundary.
 
 #[cfg(feature = "agent-monitor")]
+mod metadata;
+#[cfg(feature = "agent-monitor")]
 mod state;
 #[cfg(feature = "agent-monitor")]
 mod view;

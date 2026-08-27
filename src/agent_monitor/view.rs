@@ -6,6 +6,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
+use unicode_ellipsis::truncate_str;
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::App,
@@ -34,7 +36,7 @@ impl Painter {
         ])
         .areas(draw_loc);
         let [sessions_area, graph_area] =
-            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+            Layout::horizontal([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .areas(main_area);
         let [cpu_area, rss_area] =
             Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -72,17 +74,19 @@ impl Painter {
             ))
             .title(Line::styled(hint, self.styles.widget_title_style).right_aligned());
         let summary = Line::from(vec![
-            Span::raw(format!(" roots: {}", snapshot.sessions.len())),
-            Span::raw(format!("  Codex: {}", snapshot.codex_sessions)),
-            Span::raw(format!("  Claude: {}", snapshot.claude_sessions)),
-            Span::raw(format!("  CPU: {:.1}%", snapshot.total_cpu_usage_percent)),
             Span::raw(format!(
-                "  ΣRSS: {}",
-                format_bytes(snapshot.total_rss_bytes)
+                " sessions:{}",
+                snapshot.codex_sessions + snapshot.claude_sessions
             )),
-            Span::raw(format!("  proc: {}", snapshot.total_processes)),
+            Span::raw(format!("  C:{}", snapshot.codex_sessions)),
+            Span::raw(format!(" Cl:{}", snapshot.claude_sessions)),
+            Span::raw(format!("  attr:{}", snapshot.attributed_sessions)),
+            Span::raw(format!(" rt:{}", snapshot.runtime_groups)),
+            Span::raw(format!("  CPU:{:.1}%", snapshot.total_cpu_usage_percent)),
+            Span::raw(format!("  RSS:{}", format_bytes(snapshot.total_rss_bytes))),
+            Span::raw(format!("  P:{}", snapshot.total_processes)),
             Span::styled(
-                format!("  findings: {} ", snapshot.findings.len()),
+                format!("  F:{} ", snapshot.findings.len()),
                 if snapshot.findings.is_empty() {
                     self.styles.text_style
                 } else {
@@ -107,13 +111,15 @@ impl Painter {
         if state.snapshot.sessions.is_empty() {
             rows.push(AgentTreeRow::new(
                 AgentTreeRowKind::Session,
-                " No Codex or Claude root processes detected.",
+                " No Codex or Claude sessions detected.",
                 self.styles.disabled_text_style,
             ));
         } else {
             for (index, session) in state.snapshot.sessions.iter().enumerate() {
                 let selected = state.is_session_selected(index);
-                let marker = if state.is_session_expanded(session.key) {
+                let marker = if !session.has_attributed_resources() {
+                    "·"
+                } else if state.is_session_expanded(session.key) {
                     "▾"
                 } else {
                     "▸"
@@ -123,14 +129,11 @@ impl Painter {
                 } else {
                     String::new()
                 };
-                let line = format!(
-                    "{marker} {:<6} #{:<6} {:>6.1}% {:>8} {:>3}p  {:>7}{warning}",
-                    session.provider.label(),
-                    session.key.root.pid,
-                    session.cpu_usage_percent,
-                    format_bytes(session.rss_bytes),
-                    session.processes.len(),
-                    format_duration(session.uptime),
+                let line = format_session_row(
+                    session,
+                    marker,
+                    area.width.saturating_sub(2) as usize,
+                    &warning,
                 );
                 rows.push(AgentTreeRow::new(
                     AgentTreeRowKind::Session,
@@ -138,6 +141,9 @@ impl Painter {
                     if selected {
                         self.styles.selected_text_style
                     } else {
+                        // Resource attribution is not an activity signal: a Codex task can be
+                        // actively reasoning inside the shared app-server without owning a
+                        // visible child process at this sampling instant.
                         self.styles.text_style
                     },
                 ));
@@ -146,7 +152,7 @@ impl Painter {
                 }
 
                 if state.is_session_expanded(session.key) {
-                    for process in session.processes.iter().skip(1) {
+                    for process in session.visible_processes() {
                         let indent = "  ".repeat(process.depth.saturating_sub(1));
                         let state_marker = if process.is_zombie() { " Z" } else { "" };
                         let selected = state.is_process_selected(process.identity);
@@ -202,7 +208,7 @@ impl Painter {
             .border_type(self.styles.border_type)
             .border_style(self.styles.border_style)
             .title(Line::styled(
-                " Tree (← close, → open, j/k move) ",
+                " Sessions + runtime (← close, → open, j/k move) ",
                 self.styles.widget_title_style,
             ));
         f.render_widget(
@@ -229,6 +235,11 @@ impl Painter {
             self.draw_empty_agent_graph(f, rss_area, " ΣRSS — no selected session ");
             return;
         };
+        if !session.has_attributed_resources() {
+            self.draw_empty_agent_graph(f, cpu_area, " CPU — no attributable process ");
+            self.draw_empty_agent_graph(f, rss_area, " RSS — no attributable process ");
+            return;
+        }
         let Some(history) = histories.get(&session.key) else {
             self.draw_empty_agent_graph(f, cpu_area, " CPU — collecting history ");
             self.draw_empty_agent_graph(f, rss_area, " ΣRSS — collecting history ");
@@ -388,6 +399,39 @@ fn hidden_rows_label(direction: &str, rows: &[AgentTreeRow]) -> String {
     }
 }
 
+fn format_session_row(session: &AgentSession, marker: &str, width: usize, warning: &str) -> String {
+    let category = if session.is_runtime() {
+        "Runtime"
+    } else {
+        session.provider.label()
+    };
+    let prefix = format!("{marker} {category:<7} ");
+    let suffix = if session.has_attributed_resources() {
+        format!(
+            " {:>6.1}% {:>8} {:>3}p{warning}",
+            session.cpu_usage_percent,
+            format_bytes(session.rss_bytes),
+            session.processes.len(),
+        )
+    } else {
+        format!(" {:>7} {:>8} {:>4}{warning}", "—", "—", "—")
+    };
+    let title_width = width
+        .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
+        .saturating_sub(UnicodeWidthStr::width(suffix.as_str()))
+        .max(1);
+    let display_title = session.display_title();
+    let title = fit_session_title(&display_title, title_width);
+
+    format!("{prefix}{title}{suffix}")
+}
+
+fn fit_session_title(title: &str, width: usize) -> String {
+    let title = truncate_str(title, width);
+    let padding = width.saturating_sub(UnicodeWidthStr::width(title.as_ref()));
+    format!("{title}{}", " ".repeat(padding))
+}
+
 fn draw_cpu_graph(
     painter: &Painter, f: &mut Frame<'_>, area: Rect, session: &AgentSession,
     history: &AgentHistory, graph: &mut crate::components::time_series::AutoYAxisTimeGraph,
@@ -409,7 +453,13 @@ fn draw_cpu_graph(
         area,
         graph_context(
             painter,
-            format!(" CPU — {} #{} ", session.provider, session.key.root.pid).into(),
+            format!(
+                " CPU — {} {} · {} ",
+                session.provider,
+                session.display_title(),
+                format_duration(session.uptime)
+            )
+            .into(),
         ),
         AxisBound::Max(upper),
         &labels,
@@ -439,7 +489,13 @@ fn draw_rss_graph(
         area,
         graph_context(
             painter,
-            format!(" ΣRSS — {} #{} ", session.provider, session.key.root.pid).into(),
+            format!(
+                " ΣRSS — {} {} · {} ",
+                session.provider,
+                session.display_title(),
+                format_duration(session.uptime)
+            )
+            .into(),
         ),
         AxisBound::Max(upper),
         &labels,
@@ -538,5 +594,11 @@ mod tests {
         );
         assert!(!show_agent_tree_overflow_markers(1));
         assert!(!show_agent_tree_overflow_markers(2));
+    }
+
+    #[test]
+    fn session_titles_are_unicode_truncated_and_padded_to_the_metric_column() {
+        assert_eq!(fit_session_title("セッションタイトル", 10), "セッショ… ");
+        assert_eq!(fit_session_title("short", 8), "short   ");
     }
 }
