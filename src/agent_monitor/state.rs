@@ -1039,6 +1039,9 @@ impl ThreadEvidence {
 fn debug_assert_resource_conservation(
     sessions: &[AgentSession], process_data: &ProcessData, root_pid: Pid,
 ) {
+    #[cfg(not(debug_assertions))]
+    let _ = (sessions, process_data, root_pid);
+
     #[cfg(debug_assertions)]
     {
         let root_pids = descendant_pids(root_pid, process_data);
