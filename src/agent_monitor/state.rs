@@ -14,6 +14,8 @@ use crate::{
     components::time_series::{AutoYAxisTimeGraph, TimeseriesConfig},
 };
 
+use super::metadata::{CodexAnnotations, CodexMetadata};
+
 const MIN_RSS_GROWTH_WINDOW: Duration = Duration::from_secs(60);
 const MIN_RSS_GROWTH_BYTES: u64 = 64 * 1024 * 1024;
 const MIN_RSS_GROWTH_RATIO: f64 = 1.20;
@@ -47,8 +49,68 @@ pub(super) struct ProcessIdentity {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(super) struct ThreadKey([u8; 16]);
+
+impl ThreadKey {
+    pub(super) fn parse(value: &str) -> Option<Self> {
+        let hexadecimal = value
+            .bytes()
+            .filter(|byte| *byte != b'-')
+            .collect::<Vec<_>>();
+        if hexadecimal.len() != 32 {
+            return None;
+        }
+
+        let mut bytes = [0_u8; 16];
+        for (index, pair) in hexadecimal.chunks_exact(2).enumerate() {
+            let pair = std::str::from_utf8(pair).ok()?;
+            bytes[index] = u8::from_str_radix(pair, 16).ok()?;
+        }
+        Some(Self(bytes))
+    }
+
+    pub(super) fn short(self) -> String {
+        self.to_string()[..8].to_string()
+    }
+}
+
+impl fmt::Display for ThreadKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = self.0;
+        write!(
+            f,
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            bytes[0],
+            bytes[1],
+            bytes[2],
+            bytes[3],
+            bytes[4],
+            bytes[5],
+            bytes[6],
+            bytes[7],
+            bytes[8],
+            bytes[9],
+            bytes[10],
+            bytes[11],
+            bytes[12],
+            bytes[13],
+            bytes[14],
+            bytes[15],
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum AgentSessionKind {
+    CodexThread(ThreadKey),
+    ProcessRoot,
+    Runtime,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct AgentSessionKey {
     pub(super) root: ProcessIdentity,
+    kind: AgentSessionKind,
 }
 
 #[derive(Clone, Debug)]
@@ -84,11 +146,50 @@ impl AgentProcess {
 pub(super) struct AgentSession {
     pub(super) key: AgentSessionKey,
     pub(super) provider: AgentProvider,
+    pub(super) title: Option<String>,
     pub(super) cpu_usage_percent: f32,
     pub(super) rss_bytes: u64,
     pub(super) uptime: Duration,
     pub(super) processes: Vec<AgentProcess>,
     pub(super) zombie_count: usize,
+}
+
+impl AgentSession {
+    pub(super) fn is_runtime(&self) -> bool {
+        matches!(self.key.kind, AgentSessionKind::Runtime)
+    }
+
+    fn is_counted_session(&self) -> bool {
+        !self.is_runtime()
+    }
+
+    pub(super) fn has_attributed_resources(&self) -> bool {
+        !self.processes.is_empty()
+    }
+
+    fn thread_key(&self) -> Option<ThreadKey> {
+        match self.key.kind {
+            AgentSessionKind::CodexThread(thread) => Some(thread),
+            AgentSessionKind::ProcessRoot | AgentSessionKind::Runtime => None,
+        }
+    }
+
+    pub(super) fn display_title(&self) -> String {
+        if let Some(title) = self.title.as_deref() {
+            return title.to_string();
+        }
+        match self.key.kind {
+            AgentSessionKind::CodexThread(thread) => format!("thread {}", thread.short()),
+            AgentSessionKind::ProcessRoot => format!("#{}", self.key.root.pid),
+            AgentSessionKind::Runtime => {
+                format!("runtime #{} (unattributed)", self.key.root.pid)
+            }
+        }
+    }
+
+    pub(super) fn visible_processes(&self) -> impl Iterator<Item = &AgentProcess> {
+        self.processes.iter().filter(|process| process.depth > 0)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,6 +214,8 @@ pub(super) struct AgentSnapshot {
     pub(super) total_processes: usize,
     pub(super) codex_sessions: usize,
     pub(super) claude_sessions: usize,
+    pub(super) attributed_sessions: usize,
+    pub(super) runtime_groups: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -187,6 +290,8 @@ pub(crate) struct AgentMonitor {
     observed_identities: HashMap<Pid, ObservedIdentity>,
     refresh_generation: u64,
     next_process_generation: u64,
+    codex_metadata: CodexMetadata,
+    live_metadata_enabled: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -223,6 +328,8 @@ impl AgentMonitor {
             observed_identities: HashMap::new(),
             refresh_generation: 0,
             next_process_generation: 0,
+            codex_metadata: CodexMetadata::new(),
+            live_metadata_enabled: !cfg!(test),
         }
     }
 
@@ -253,43 +360,60 @@ impl AgentMonitor {
         self.observed_identities.clear();
         self.refresh_generation = 0;
         self.next_process_generation = 0;
+        self.codex_metadata.clear();
         self.cpu_graph.state_mut().reset_zoom();
         self.rss_graph.state_mut().reset_zoom();
     }
 
     pub fn refresh(&mut self, process_data: &ProcessData, at: Instant) {
+        let identities = self.refresh_process_identities(process_data, at);
+        let roots = agent_roots(process_data);
+        let annotations = if self.live_metadata_enabled {
+            let codex_pids = roots
+                .iter()
+                .filter(|(_, provider)| *provider == AgentProvider::Codex)
+                .flat_map(|(root_pid, _)| descendant_pids(*root_pid, process_data))
+                .collect::<Vec<_>>();
+            self.codex_metadata
+                .refresh(&codex_pids, &identities, process_data, at)
+        } else {
+            CodexAnnotations::default()
+        };
+
+        self.refresh_with_annotations(process_data, at, identities, roots, annotations);
+    }
+
+    fn refresh_with_annotations(
+        &mut self, process_data: &ProcessData, at: Instant,
+        identities: HashMap<Pid, ProcessIdentity>, roots: Vec<(Pid, AgentProvider)>,
+        annotations: CodexAnnotations,
+    ) {
         let selected_key = self.selected().map(|session| session.key);
         let selected_process = self.selected_process;
-        let identities = self.refresh_process_identities(process_data, at);
-        let provider_by_pid = process_data
-            .process_harvest
-            .values()
-            .filter_map(|process| detect_provider(process).map(|provider| (process.pid, provider)))
-            .collect::<HashMap<_, _>>();
-
-        let mut roots = provider_by_pid
+        let codex_roots = roots
             .iter()
-            .filter_map(|(&pid, &provider)| {
-                (!has_agent_ancestor(pid, process_data, &provider_by_pid))
-                    .then_some((pid, provider))
+            .filter(|(_, provider)| *provider == AgentProvider::Codex)
+            .filter_map(|(pid, _)| {
+                let identity = identities.get(pid).copied()?;
+                Some((identity, descendant_pids(*pid, process_data).len()))
             })
             .collect::<Vec<_>>();
-        roots.sort_unstable_by_key(|(pid, provider)| (*provider, *pid));
-
         let mut current_owner = HashMap::new();
         let mut sessions = roots
             .into_iter()
-            .filter_map(|(root_pid, provider)| {
-                build_session(
+            .flat_map(|(root_pid, provider)| {
+                build_sessions(
                     root_pid,
                     provider,
                     process_data,
                     &identities,
+                    &annotations,
                     &mut current_owner,
                 )
             })
             .collect::<Vec<_>>();
-        sessions.sort_unstable_by_key(|session| (session.provider, session.key.root.pid));
+        add_listed_codex_sessions(&mut sessions, &annotations, &codex_roots);
+        sort_sessions(&mut sessions, &annotations);
 
         let mut findings = Vec::new();
         for session in &sessions {
@@ -302,8 +426,10 @@ impl AgentMonitor {
                 findings.push(AgentFinding {
                     kind: AgentFindingKind::Zombie,
                     message: format!(
-                        "ZOMBIE pid {} ({}) under {} #{}",
-                        process.identity.pid, process.name, session.provider, session.key.root.pid
+                        "ZOMBIE pid {} ({}) under {}",
+                        process.identity.pid,
+                        process.name,
+                        session.display_title()
                     ),
                 });
             }
@@ -333,17 +459,19 @@ impl AgentMonitor {
             }
         }
 
-        for session in &sessions {
+        for session in sessions
+            .iter()
+            .filter(|session| session.has_attributed_resources())
+        {
             let history = self.histories.entry(session.key).or_default();
             history.push(at, session);
             if let Some(growth) = history.rss_growth_bytes() {
                 findings.push(AgentFinding {
                     kind: AgentFindingKind::RssRising,
                     message: format!(
-                        "RSS rising +{} MiB for {} #{} (not a leak verdict)",
+                        "RSS rising +{} MiB for {} (not a leak verdict)",
                         growth / (1024 * 1024),
-                        session.provider,
-                        session.key.root.pid
+                        session.display_title()
                     ),
                 });
             }
@@ -357,11 +485,23 @@ impl AgentMonitor {
         let total_processes = sessions.iter().map(|session| session.processes.len()).sum();
         let codex_sessions = sessions
             .iter()
-            .filter(|session| session.provider == AgentProvider::Codex)
+            .filter(|session| {
+                session.provider == AgentProvider::Codex && session.is_counted_session()
+            })
             .count();
         let claude_sessions = sessions
             .iter()
-            .filter(|session| session.provider == AgentProvider::Claude)
+            .filter(|session| {
+                session.provider == AgentProvider::Claude && session.is_counted_session()
+            })
+            .count();
+        let attributed_sessions = sessions
+            .iter()
+            .filter(|session| session.is_counted_session() && session.has_attributed_resources())
+            .count();
+        let runtime_groups = sessions
+            .iter()
+            .filter(|session| session.is_runtime())
             .count();
 
         self.snapshot = AgentSnapshot {
@@ -372,6 +512,8 @@ impl AgentMonitor {
             total_processes,
             codex_sessions,
             claude_sessions,
+            attributed_sessions,
+            runtime_groups,
         };
         self.previous_owner = current_owner;
 
@@ -396,12 +538,44 @@ impl AgentMonitor {
             self.selected().is_some_and(|session| {
                 self.expanded_sessions.contains(&session.key)
                     && session
-                        .processes
-                        .iter()
-                        .skip(1)
+                        .visible_processes()
                         .any(|process| process.identity == *identity)
             })
         });
+    }
+
+    #[cfg(test)]
+    fn refresh_with_codex_threads_for_test(
+        &mut self, process_data: &ProcessData, at: Instant, threads: &[(Pid, &str)],
+        titles: &[(&str, &str)],
+    ) {
+        self.refresh_with_codex_annotations_for_test(process_data, at, threads, titles, &[]);
+    }
+
+    #[cfg(test)]
+    fn refresh_with_codex_annotations_for_test(
+        &mut self, process_data: &ProcessData, at: Instant, threads: &[(Pid, &str)],
+        titles: &[(&str, &str)], listed_threads: &[&str],
+    ) {
+        let identities = self.refresh_process_identities(process_data, at);
+        let roots = agent_roots(process_data);
+        let annotations = CodexAnnotations {
+            thread_by_pid: threads
+                .iter()
+                .filter_map(|(pid, thread)| ThreadKey::parse(thread).map(|thread| (*pid, thread)))
+                .collect(),
+            titles: titles
+                .iter()
+                .filter_map(|(thread, title)| {
+                    ThreadKey::parse(thread).map(|thread| (thread, (*title).to_string()))
+                })
+                .collect(),
+            listed_threads: listed_threads
+                .iter()
+                .filter_map(|thread| ThreadKey::parse(thread))
+                .collect(),
+        };
+        self.refresh_with_annotations(process_data, at, identities, roots, annotations);
     }
 
     pub fn prune(&mut self, max_age: Duration) {
@@ -505,9 +679,7 @@ impl AgentMonitor {
             if self.is_session_expanded(session.key) {
                 rows.extend(
                     session
-                        .processes
-                        .iter()
-                        .skip(1)
+                        .visible_processes()
                         .map(|process| (session_index, Some(process.identity))),
                 );
             }
@@ -560,6 +732,38 @@ fn instant_distance(left: Instant, right: Instant) -> Duration {
     }
 }
 
+fn agent_roots(process_data: &ProcessData) -> Vec<(Pid, AgentProvider)> {
+    let provider_by_pid = process_data
+        .process_harvest
+        .values()
+        .filter_map(|process| detect_provider(process).map(|provider| (process.pid, provider)))
+        .collect::<HashMap<_, _>>();
+    let mut roots = provider_by_pid
+        .iter()
+        .filter_map(|(&pid, &provider)| {
+            (!has_agent_ancestor(pid, process_data, &provider_by_pid)).then_some((pid, provider))
+        })
+        .collect::<Vec<_>>();
+    roots.sort_unstable_by_key(|(pid, provider)| (*provider, *pid));
+    roots
+}
+
+fn descendant_pids(root_pid: Pid, process_data: &ProcessData) -> Vec<Pid> {
+    let mut pids = Vec::new();
+    let mut stack = vec![root_pid];
+    let mut visited = HashSet::new();
+    while let Some(pid) = stack.pop() {
+        if !visited.insert(pid) || !process_data.process_harvest.contains_key(&pid) {
+            continue;
+        }
+        pids.push(pid);
+        if let Some(children) = process_data.process_parent_mapping.get(&pid) {
+            stack.extend(children.iter().copied());
+        }
+    }
+    pids
+}
+
 fn has_agent_ancestor(
     pid: Pid, process_data: &ProcessData, provider_by_pid: &HashMap<Pid, AgentProvider>,
 ) -> bool {
@@ -582,30 +786,104 @@ fn has_agent_ancestor(
     false
 }
 
-fn build_session(
-    root_pid: Pid, provider: AgentProvider, process_data: &ProcessData,
-    identities: &HashMap<Pid, ProcessIdentity>,
-    owner: &mut HashMap<ProcessIdentity, AgentSessionKey>,
-) -> Option<AgentSession> {
-    let root = process_data.process_harvest.get(&root_pid)?;
-    let key = AgentSessionKey {
-        root: *identities.get(&root_pid)?,
+fn add_listed_codex_sessions(
+    sessions: &mut Vec<AgentSession>, annotations: &CodexAnnotations,
+    codex_roots: &[(ProcessIdentity, usize)],
+) {
+    if annotations.listed_threads.is_empty() {
+        return;
+    }
+
+    let existing_threads = sessions
+        .iter()
+        .filter_map(AgentSession::thread_key)
+        .collect::<HashSet<_>>();
+    let mut observed_by_root = HashMap::<ProcessIdentity, usize>::new();
+    for session in sessions
+        .iter()
+        .filter(|session| session.provider == AgentProvider::Codex)
+        .filter(|session| session.thread_key().is_some())
+    {
+        *observed_by_root.entry(session.key.root).or_default() += 1;
+    }
+    let preferred_root = observed_by_root
+        .into_iter()
+        .max_by_key(|(root, count)| (*count, root.pid))
+        .map(|(root, _)| root)
+        .or_else(|| {
+            codex_roots
+                .iter()
+                .max_by_key(|(root, process_count)| (*process_count, root.pid))
+                .map(|(root, _)| *root)
+        });
+    let Some(root) = preferred_root else {
+        return;
     };
 
-    let mut processes = Vec::new();
+    for thread in annotations
+        .listed_threads
+        .iter()
+        .copied()
+        .filter(|thread| !existing_threads.contains(thread))
+    {
+        sessions.push(AgentSession {
+            key: AgentSessionKey {
+                root,
+                kind: AgentSessionKind::CodexThread(thread),
+            },
+            provider: AgentProvider::Codex,
+            title: annotations.titles.get(&thread).cloned(),
+            cpu_usage_percent: 0.0,
+            rss_bytes: 0,
+            uptime: Duration::ZERO,
+            processes: Vec::new(),
+            zombie_count: 0,
+        });
+    }
+}
+
+fn sort_sessions(sessions: &mut [AgentSession], annotations: &CodexAnnotations) {
+    let listed_order = annotations
+        .listed_threads
+        .iter()
+        .enumerate()
+        .map(|(index, thread)| (*thread, index))
+        .collect::<HashMap<_, _>>();
+    sessions.sort_unstable_by_key(|session| {
+        let group = match (session.provider, session.key.kind) {
+            (AgentProvider::Codex, AgentSessionKind::CodexThread(_)) => 0,
+            (AgentProvider::Codex, AgentSessionKind::ProcessRoot) => 1,
+            (AgentProvider::Codex, AgentSessionKind::Runtime) => 2,
+            (AgentProvider::Claude, _) => 3,
+        };
+        let listed_index = session
+            .thread_key()
+            .and_then(|thread| listed_order.get(&thread).copied())
+            .unwrap_or(usize::MAX);
+        (group, listed_index, session.key.root.pid, session.key.kind)
+    });
+}
+
+fn build_sessions(
+    root_pid: Pid, provider: AgentProvider, process_data: &ProcessData,
+    identities: &HashMap<Pid, ProcessIdentity>, annotations: &CodexAnnotations,
+    owner: &mut HashMap<ProcessIdentity, AgentSessionKey>,
+) -> Vec<AgentSession> {
+    let Some(root_identity) = identities.get(&root_pid).copied() else {
+        return Vec::new();
+    };
+
+    let mut ordered_processes = Vec::new();
     let mut stack = vec![(root_pid, 0_usize)];
     let mut visited = HashSet::new();
     while let Some((pid, depth)) = stack.pop() {
         if !visited.insert(pid) {
             continue;
         }
-        let Some(process) = process_data.process_harvest.get(&pid) else {
+        if !process_data.process_harvest.contains_key(&pid) || !identities.contains_key(&pid) {
             continue;
-        };
-
-        let identity = *identities.get(&pid)?;
-        owner.insert(identity, key);
-        processes.push(AgentProcess::from_harvest(process, identity, depth));
+        }
+        ordered_processes.push((pid, depth));
 
         if let Some(children) = process_data.process_parent_mapping.get(&pid) {
             let mut children = children.clone();
@@ -614,6 +892,198 @@ fn build_session(
         }
     }
 
+    let mut evidence_by_pid = HashMap::new();
+    for (pid, _) in ordered_processes.iter().rev() {
+        let mut evidence = annotations
+            .thread_by_pid
+            .get(pid)
+            .copied()
+            .map(ThreadEvidence::One)
+            .unwrap_or(ThreadEvidence::None);
+        if let Some(children) = process_data.process_parent_mapping.get(pid) {
+            for child in children {
+                evidence = evidence.merge(
+                    evidence_by_pid
+                        .get(child)
+                        .copied()
+                        .unwrap_or(ThreadEvidence::None),
+                );
+            }
+        }
+        evidence_by_pid.insert(*pid, evidence);
+    }
+
+    let mut tagged_processes = Vec::with_capacity(ordered_processes.len());
+    let mut inherited_by_pid = HashMap::<Pid, ThreadKey>::new();
+    for (pid, depth) in ordered_processes {
+        let direct_thread = annotations.thread_by_pid.get(&pid).copied();
+        let inherited_thread = process_data
+            .process_harvest
+            .get(&pid)
+            .and_then(|process| process.parent_pid)
+            .and_then(|parent| inherited_by_pid.get(&parent).copied());
+        let inferred_thread = (pid != root_pid)
+            .then(|| evidence_by_pid.get(&pid).copied())
+            .flatten()
+            .and_then(ThreadEvidence::single);
+        let thread = direct_thread.or(inherited_thread).or(inferred_thread);
+        if let Some(thread) = thread {
+            inherited_by_pid.insert(pid, thread);
+        }
+
+        let Some(process) = process_data.process_harvest.get(&pid) else {
+            continue;
+        };
+        let Some(identity) = identities.get(&pid).copied() else {
+            continue;
+        };
+        tagged_processes.push((thread, AgentProcess::from_harvest(process, identity, depth)));
+    }
+
+    if provider != AgentProvider::Codex
+        || !tagged_processes.iter().any(|(thread, _)| thread.is_some())
+    {
+        let kind = if provider == AgentProvider::Codex
+            && process_data
+                .process_harvest
+                .get(&root_pid)
+                .is_some_and(|process| {
+                    process
+                        .command
+                        .split_whitespace()
+                        .any(|argument| argument == "app-server")
+                }) {
+            AgentSessionKind::Runtime
+        } else {
+            AgentSessionKind::ProcessRoot
+        };
+        let processes = tagged_processes
+            .into_iter()
+            .map(|(_, process)| process)
+            .collect();
+        let sessions = session_from_processes(
+            AgentSessionKey {
+                root: root_identity,
+                kind,
+            },
+            provider,
+            None,
+            processes,
+            process_data,
+            owner,
+        )
+        .into_iter()
+        .collect::<Vec<_>>();
+        debug_assert_resource_conservation(&sessions, process_data, root_pid);
+        return sessions;
+    }
+
+    let mut grouped = HashMap::<Option<ThreadKey>, Vec<AgentProcess>>::new();
+    for (thread, process) in tagged_processes {
+        grouped.entry(thread).or_default().push(process);
+    }
+
+    let sessions = grouped
+        .into_iter()
+        .filter_map(|(thread, processes)| {
+            let (kind, title) = if let Some(thread) = thread {
+                (
+                    AgentSessionKind::CodexThread(thread),
+                    annotations.titles.get(&thread).cloned(),
+                )
+            } else {
+                (AgentSessionKind::Runtime, None)
+            };
+            session_from_processes(
+                AgentSessionKey {
+                    root: root_identity,
+                    kind,
+                },
+                provider,
+                title,
+                processes,
+                process_data,
+                owner,
+            )
+        })
+        .collect::<Vec<_>>();
+    debug_assert_resource_conservation(&sessions, process_data, root_pid);
+    sessions
+}
+
+#[derive(Clone, Copy)]
+enum ThreadEvidence {
+    None,
+    One(ThreadKey),
+    Multiple,
+}
+
+impl ThreadEvidence {
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Multiple, _) | (_, Self::Multiple) => Self::Multiple,
+            (Self::None, evidence) | (evidence, Self::None) => evidence,
+            (Self::One(left), Self::One(right)) if left == right => Self::One(left),
+            (Self::One(_), Self::One(_)) => Self::Multiple,
+        }
+    }
+
+    fn single(self) -> Option<ThreadKey> {
+        match self {
+            Self::One(thread) => Some(thread),
+            Self::None | Self::Multiple => None,
+        }
+    }
+}
+
+fn debug_assert_resource_conservation(
+    sessions: &[AgentSession], process_data: &ProcessData, root_pid: Pid,
+) {
+    #[cfg(debug_assertions)]
+    {
+        let root_pids = descendant_pids(root_pid, process_data);
+        let expected_processes = root_pids.len();
+        let expected_rss = root_pids
+            .iter()
+            .filter_map(|pid| process_data.process_harvest.get(pid))
+            .map(|process| process.mem_usage)
+            .sum::<u64>();
+        let expected_cpu = root_pids
+            .iter()
+            .filter_map(|pid| process_data.process_harvest.get(pid))
+            .map(|process| process.cpu_usage_percent)
+            .sum::<f32>();
+        let actual_processes = sessions
+            .iter()
+            .map(|session| session.processes.len())
+            .sum::<usize>();
+        let actual_rss = sessions
+            .iter()
+            .map(|session| session.rss_bytes)
+            .sum::<u64>();
+        let actual_cpu = sessions
+            .iter()
+            .map(|session| session.cpu_usage_percent)
+            .sum::<f32>();
+        let cpu_tolerance = expected_cpu.abs().max(1.0) * f32::EPSILON * 8.0;
+
+        debug_assert_eq!(actual_processes, expected_processes);
+        debug_assert_eq!(actual_rss, expected_rss);
+        debug_assert!((actual_cpu - expected_cpu).abs() <= cpu_tolerance);
+    }
+}
+
+fn session_from_processes(
+    key: AgentSessionKey, provider: AgentProvider, title: Option<String>,
+    processes: Vec<AgentProcess>, process_data: &ProcessData,
+    owner: &mut HashMap<ProcessIdentity, AgentSessionKey>,
+) -> Option<AgentSession> {
+    if processes.is_empty() {
+        return None;
+    }
+    for process in &processes {
+        owner.insert(process.identity, key);
+    }
     let cpu_usage_percent = processes
         .iter()
         .map(|process| process.cpu_usage_percent)
@@ -623,13 +1093,20 @@ fn build_session(
         .iter()
         .filter(|process| process.is_zombie())
         .count();
+    let uptime = processes
+        .iter()
+        .filter_map(|process| process_data.process_harvest.get(&process.identity.pid))
+        .map(|process| process.time)
+        .max()
+        .unwrap_or_default();
 
     Some(AgentSession {
         key,
         provider,
+        title,
         cpu_usage_percent,
         rss_bytes,
-        uptime: root.time,
+        uptime,
         processes,
         zombie_count,
     })
@@ -730,6 +1207,189 @@ mod tests {
         assert_eq!(codex.cpu_usage_percent, 17.0);
         assert_eq!(codex.rss_bytes, 600);
         assert_eq!(codex.processes[2].depth, 2);
+    }
+
+    #[test]
+    fn codex_processes_are_split_by_thread_and_runtime_resources_stay_separate() {
+        let data = process_data(vec![
+            process(10, Some(1), "codex", 10.0, 100),
+            process(11, Some(10), "node", 5.0, 200),
+            process(12, Some(11), "cargo", 2.0, 300),
+            process(13, Some(10), "node", 3.0, 400),
+        ]);
+        let mut state = AgentMonitor::new(&config(), false, false);
+        state.refresh_with_codex_threads_for_test(
+            &data,
+            Instant::now(),
+            &[
+                (11, "01a041af-04ff-7f31-858e-67724bfa8e56"),
+                (13, "01a041c1-1c25-7400-94cc-5efd2517517d"),
+            ],
+            &[
+                (
+                    "01a041af-04ff-7f31-858e-67724bfa8e56",
+                    "Knowledge quality skill",
+                ),
+                (
+                    "01a041c1-1c25-7400-94cc-5efd2517517d",
+                    "Agent Monitor sessions",
+                ),
+            ],
+        );
+
+        assert_eq!(state.snapshot.codex_sessions, 2);
+        assert_eq!(state.snapshot.runtime_groups, 1);
+        assert_eq!(state.snapshot.sessions.len(), 3);
+
+        let first = state
+            .snapshot
+            .sessions
+            .iter()
+            .find(|session| session.title.as_deref() == Some("Knowledge quality skill"))
+            .unwrap();
+        assert_eq!(first.cpu_usage_percent, 7.0);
+        assert_eq!(first.rss_bytes, 500);
+        assert_eq!(
+            first
+                .processes
+                .iter()
+                .map(|process| process.identity.pid)
+                .collect::<Vec<_>>(),
+            vec![11, 12]
+        );
+
+        let second = state
+            .snapshot
+            .sessions
+            .iter()
+            .find(|session| session.title.as_deref() == Some("Agent Monitor sessions"))
+            .unwrap();
+        assert_eq!(second.cpu_usage_percent, 3.0);
+        assert_eq!(second.rss_bytes, 400);
+        assert_eq!(second.processes.len(), 1);
+
+        let runtime = state
+            .snapshot
+            .sessions
+            .iter()
+            .find(|session| session.is_runtime())
+            .unwrap();
+        assert_eq!(runtime.cpu_usage_percent, 10.0);
+        assert_eq!(runtime.rss_bytes, 100);
+        assert_eq!(runtime.processes.len(), 1);
+    }
+
+    #[test]
+    fn listed_codex_thread_without_a_process_is_visible_but_not_reported_as_zero_usage() {
+        let observed = "01a041c1-1c25-7400-94cc-5efd2517517d";
+        let listed_only = "01a041e1-5e15-78e1-b323-641ec611a480";
+        let data = process_data(vec![
+            process(10, Some(1), "codex", 10.0, 100),
+            process(11, Some(10), "zsh", 5.0, 200),
+        ]);
+        let mut state = AgentMonitor::new(&config(), false, false);
+        state.refresh_with_codex_annotations_for_test(
+            &data,
+            Instant::now(),
+            &[(11, observed)],
+            &[(observed, "Observed"), (listed_only, "Listed only")],
+            &[observed, listed_only],
+        );
+
+        assert_eq!(state.snapshot.codex_sessions, 2);
+        assert_eq!(state.snapshot.attributed_sessions, 1);
+        let listed = state
+            .snapshot
+            .sessions
+            .iter()
+            .find(|session| session.title.as_deref() == Some("Listed only"))
+            .unwrap();
+        assert!(!listed.has_attributed_resources());
+        assert!(listed.processes.is_empty());
+
+        // A display-only session must not change the conserved resource total.
+        assert_eq!(state.snapshot.total_cpu_usage_percent, 15.0);
+        assert_eq!(state.snapshot.total_rss_bytes, 300);
+        assert_eq!(state.snapshot.total_processes, 2);
+    }
+
+    #[test]
+    fn descendant_thread_identity_claims_its_wrapper_branch_and_conserves_root_totals() {
+        let data = process_data(vec![
+            process(10, Some(1), "codex", 10.0, 100),
+            process(11, Some(10), "node_repl", 5.0, 200),
+            process(12, Some(11), "codex sandbox", 2.0, 300),
+            process(13, Some(11), "codex app-server", 3.0, 400),
+            process(14, Some(10), "mcp", 4.0, 500),
+        ]);
+        let mut state = AgentMonitor::new(&config(), false, false);
+        state.refresh_with_codex_threads_for_test(
+            &data,
+            Instant::now(),
+            &[(12, "01a041f5-34ac-7770-96d1-c0948d6cd574")],
+            &[(
+                "01a041f5-34ac-7770-96d1-c0948d6cd574",
+                "Code blocks by line",
+            )],
+        );
+
+        let thread = state
+            .snapshot
+            .sessions
+            .iter()
+            .find(|session| session.title.as_deref() == Some("Code blocks by line"))
+            .unwrap();
+        assert_eq!(
+            thread
+                .processes
+                .iter()
+                .map(|process| process.identity.pid)
+                .collect::<Vec<_>>(),
+            vec![11, 12, 13]
+        );
+        assert_eq!(thread.cpu_usage_percent, 10.0);
+        assert_eq!(thread.rss_bytes, 900);
+
+        let runtime = state
+            .snapshot
+            .sessions
+            .iter()
+            .find(|session| session.is_runtime())
+            .unwrap();
+        assert_eq!(
+            runtime
+                .processes
+                .iter()
+                .map(|process| process.identity.pid)
+                .collect::<Vec<_>>(),
+            vec![10, 14]
+        );
+
+        assert_eq!(
+            state
+                .snapshot
+                .sessions
+                .iter()
+                .map(|session| session.cpu_usage_percent)
+                .sum::<f32>(),
+            24.0
+        );
+        assert_eq!(state.snapshot.total_rss_bytes, 1_500);
+        assert_eq!(state.snapshot.total_processes, 5);
+    }
+
+    #[test]
+    fn codex_app_server_without_thread_metadata_is_unattributed_runtime_resource() {
+        let mut root = process(10, Some(1), "node", 10.0, 100);
+        root.command = "node /opt/codex app-server --listen stdio://".to_string();
+        let data = process_data(vec![root, process(11, Some(10), "node", 5.0, 200)]);
+        let mut state = AgentMonitor::new(&config(), false, false);
+        state.refresh(&data, Instant::now());
+
+        assert_eq!(state.snapshot.codex_sessions, 0);
+        assert_eq!(state.snapshot.runtime_groups, 1);
+        assert!(state.snapshot.sessions[0].is_runtime());
+        assert_eq!(state.snapshot.sessions[0].rss_bytes, 300);
     }
 
     #[test]

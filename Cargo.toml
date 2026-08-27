@@ -54,7 +54,7 @@ doc = false
 
 [features]
 # Used for general release builds.
-agent-monitor = []
+agent-monitor = ["dep:rusqlite", "dep:serde_json"]
 battery = ["dep:starship-battery"]
 nvidia = ["gpu", "dep:nvml-wrapper"]
 gpu = []
@@ -85,8 +85,10 @@ ratatui = { version = "0.30.2", default-features = false, features = [
 ] }
 ratatui-core = "0.1.2"
 regex = "1.13.1"
+rusqlite = { version = "0.37.0", features = ["bundled"], optional = true }
 rustc-hash = "2.1.3"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.151", optional = true }
 starship-battery = { version = "0.11.1", optional = true }
 sysinfo = "=0.39.6"
 timeless = "0.1.0"
