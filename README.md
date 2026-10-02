@@ -44,14 +44,15 @@
   - [Snap](#snap)
   - [Solus](#solus)
   - [Void](#void)
-  - [gah](#gah)
   - [Homebrew](#homebrew)
   - [MacPorts](#macports)
   - [Chocolatey](#chocolatey)
   - [Scoop](#scoop)
   - [winget](#winget)
-  - [Windows installer](#windows-installer)
+  - [Windows installer (MSI)](#windows-installer-msi)
   - [Conda](#conda)
+  - [gah](#gah)
+  - [ghr](#ghr)
   - [mise](#mise)
   - [Pre-built binaries](#pre-built-binaries)
     - [Auto-completion](#auto-completion)
@@ -170,8 +171,8 @@ Alternatively, you can use `cargo install` using the repo as the source.
 rustup update stable
 
 # Option 1 - Download an archive from releases and install
-curl -LO https://github.com/ClementTsang/bottom/archive/0.14.8.tar.gz
-tar -xzvf 0.14.8.tar.gz
+curl -LO https://github.com/ClementTsang/bottom/archive/0.14.9.tar.gz
+tar -xzvf 0.14.9.tar.gz
 cargo install --path . --locked
 
 # Option 2 - Manually clone the repo and install
@@ -223,20 +224,20 @@ Some examples of installing it this way:
 
 ```bash
 # x86-64
-curl -LO https://github.com/ClementTsang/bottom/releases/download/0.14.8/bottom_0.14.8-1_amd64.deb
-sudo dpkg -i bottom_0.14.8-1_amd64.deb
+curl -LO https://github.com/ClementTsang/bottom/releases/download/0.14.9/bottom_0.14.9-1_amd64.deb
+sudo dpkg -i bottom_0.14.9-1_amd64.deb
 
 # ARM64
-curl -LO https://github.com/ClementTsang/bottom/releases/download/0.14.8/bottom_0.14.8-1_arm64.deb
-sudo dpkg -i bottom_0.14.8-1_arm64.deb
+curl -LO https://github.com/ClementTsang/bottom/releases/download/0.14.9/bottom_0.14.9-1_arm64.deb
+sudo dpkg -i bottom_0.14.9-1_arm64.deb
 
 # ARM
-curl -LO https://github.com/ClementTsang/bottom/releases/download/0.14.8/bottom_0.14.8-1_armhf.deb
-sudo dpkg -i bottom_0.14.8-1_armhf.deb
+curl -LO https://github.com/ClementTsang/bottom/releases/download/0.14.9/bottom_0.14.9-1_armhf.deb
+sudo dpkg -i bottom_0.14.9-1_armhf.deb
 
 # musl-based
-curl -LO https://github.com/ClementTsang/bottom/releases/download/0.14.8/bottom-musl_0.14.8-1_amd64.deb
-sudo dpkg -i bottom-musl_0.14.8-1_amd64.deb
+curl -LO https://github.com/ClementTsang/bottom/releases/download/0.14.9/bottom-musl_0.14.9-1_amd64.deb
+sudo dpkg -i bottom-musl_0.14.9-1_amd64.deb
 ```
 
 ### Exherbo Linux
@@ -278,8 +279,8 @@ sudo dnf install bottom
 For example:
 
 ```bash
-curl -LO https://github.com/ClementTsang/bottom/releases/download/0.14.8/bottom-0.14.8-1.x86_64.rpm
-sudo dnf install ./bottom-0.14.8-1.x86_64.rpm
+curl -LO https://github.com/ClementTsang/bottom/releases/download/0.14.9/bottom-0.14.9-1.x86_64.rpm
+sudo dnf install ./bottom-0.14.9-1.x86_64.rpm
 ```
 
 ### Gentoo
@@ -344,14 +345,6 @@ Available [in the void-packages repo](https://github.com/void-linux/void-package
 sudo xbps-install bottom
 ```
 
-### gah
-
-bottom can also be installed on Linux or macOS using [gah](https://github.com/marverix/gah):
-
-```bash
-gah install bottom
-```
-
 ### Homebrew
 
 The formula is available [here](https://formulae.brew.sh/formula/bottom):
@@ -398,7 +391,7 @@ winget install Clement.bottom
 
 You can uninstall via Control Panel, Options, or `winget --uninstall bottom`.
 
-### Windows installer
+### Windows installer (MSI)
 
 You can manually install bottom as a Windows program by downloading and using the `.msi` file from the [latest release](https://github.com/ClementTsang/bottom/releases/latest).
 
@@ -415,11 +408,27 @@ conda config --set channel_priority strict
 conda install bottom
 ```
 
+### gah
+
+bottom can also be installed on Linux or macOS using [gah](https://github.com/marverix/gah):
+
+```bash
+gah install bottom
+```
+
+### ghr
+
+bottom can be installed using [ghr](https://github.com/cataggar/ghr) like so:
+
+```bash
+ghr install clementtsang/bottom
+```
+
 ### mise
 
-bottom is available in [mise](https://github.com/jdx/mise). You can install it like so:
+bottom is available via [mise](https://github.com/jdx/mise):
 
-```
+```bash
 mise use -g bottom@latest
 ```
 
@@ -604,6 +613,8 @@ Thanks to all contributors:
     </tr>
     <tr>
       <td align="center" valign="top" width="14.28%"><a href="https://gitlab.com/fazzi/"><img src="https://avatars.githubusercontent.com/u/18248986?v=4?s=100" width="100px;" alt="fazzi"/><br /><sub><b>fazzi</b></sub></a><br /><a href="https://github.com/ClementTsang/bottom/commits?author=fxzzi" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://pederbe.dev/"><img src="https://avatars.githubusercontent.com/u/16326438?v=4?s=100" width="100px;" alt="Peder Bergan"/><br /><sub><b>Peder Bergan</b></sub></a><br /><a href="https://github.com/ClementTsang/bottom/commits?author=pederbe" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://abuhurayraniloy.github.io/"><img src="https://avatars.githubusercontent.com/u/105109331?v=4?s=100" width="100px;" alt="Abu Hurayra Niloy"/><br /><sub><b>Abu Hurayra Niloy</b></sub></a><br /><a href="https://github.com/ClementTsang/bottom/commits?author=abuhurayraniloy" title="Code">💻</a></td>
     </tr>
   </tbody>
 </table>

@@ -354,8 +354,8 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 # Shows an indicator in table widgets tracking where in the list you are.
 #show_table_scroll_position = false
 
-# Show a scroll bar on the right edge of table widgets.
-#show_table_scroll_bar = false
+# Show a scroll bar on the right edge of table widgets. Enabled by default.
+#show_table_scroll_bar = true
 
 # Deprecated - use processes.process_command.
 # Show processes as their commands by default in the process widget.
@@ -406,11 +406,10 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 # Where to place the legend for the network widget. One of "none", "top-left", "top", "top-right", "left", "right", "bottom-left", "bottom", "bottom-right".
 #network_legend = "top-right"
 
-
 # Processes widget configuration
 #[processes]
 # The columns shown by the process widget. The following columns are supported (the GPU columns are only available if the GPU feature is enabled when built):
-# PID, Name, CPU%, Mem%, R/s, W/s, T.Read, T.Write, User, State, Time, GMem%, GPU%, Nice, Priority
+# PID, Name, CPU%, Mem%, Swap, R/s, W/s, T.Read, T.Write, User, State, Time, GMem%, GPU%, Nice, Priority
 #columns = ["PID", "Name", "CPU%", "Mem%", "Virt", "R/s", "W/s", "T.Read", "T.Write", "User", "State", "GMem%", "GPU%", "Priority"]
 
 # The default sort column when bottom starts. Accepts any of the column names above.
@@ -460,7 +459,6 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 # Show process CPU% usage without averaging over the number of CPU cores.
 #unnormalized_cpu = false
 
-
 # CPU widget configuration
 #[cpu]
 # One of "all" (default), "average"/"avg"
@@ -469,9 +467,11 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 # Whether to show a decimal place for CPU usage values.
 #show_decimal = false
 
-
 # Disk widget configuration
 #[disk]
+
+# Whether to display disk widget data with binary prefixes (e.g. GiB instead of GB).
+#use_binary_prefix = false
 
 # The columns shown by the process widget. The following columns are supported:
 # Disk, Mount, Used, Free, Total, Used%, Free%, R/s, W/s
@@ -525,7 +525,6 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 # Whether to require matching the whole word. Defaults to false.
 #whole_word = false
 
-
 # Disk I/O graph widget configuration
 #[disk_io_graph]
 
@@ -564,7 +563,6 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 # Whether to require matching the whole word. Defaults to false.
 #whole_word = false
 
-
 # Temperature widget configuration
 #[temperature]
 
@@ -595,7 +593,6 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 # Whether to require matching the whole word. Defaults to false.
 #whole_word = false
 
-
 # Temperature graph widget configuration
 #[temperature_graph]
 
@@ -623,7 +620,6 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 # Whether to require matching the whole word. Defaults to false.
 #whole_word = false
 
-
 # Memory widget configuration
 #[memory_graph]
 
@@ -638,7 +634,6 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 
 # Use short GPU names (e.g. "GPU" or "GPU0", "GPU1") instead of full GPU names. Only available if the GPU feature is enabled when built.
 #short_gpu_names = false
-
 
 # Network widget configuration
 #[network_graph]
@@ -665,7 +660,6 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 
 # Whether to require matching the whole word. Defaults to false.
 #whole_word = false
-
 
 # These are all the components that support custom theming.  Note that colour support
 # will depend on terminal support.
@@ -725,10 +719,12 @@ pub(crate) const CONFIG_TEXT: &str = r#"# This is a default config file for bott
 #text = {colour = "gray"}
 #selected_text = {colour = "black", bg_colour = "light blue"}
 #disabled_text = {colour = "dark gray"}
-# Disabled by default
+# Disabled by default.
 #bg_colour = "black"
-# Only on Linux
+# Only supported on Linux.
 #thread_text = {colour = "green"}
+# One of "pipe", "block", or "square".
+#bar_type = "pipe"
 
 # Layout - layouts follow a pattern like this:
 # [[row]] represents a row in the application.
@@ -769,7 +765,8 @@ mod test {
 
     #[test]
     fn help_menu_matches_entry_len() {
-        // Subtract 2 to account for the extra newline + search instructions at the bottom.
+        // Subtract 2 to account for the extra newline + search instructions at
+        // the bottom.
         const HELP_CONTENTS_TEXT_LEN: usize = HELP_CONTENTS_TEXT.len() - 2;
 
         assert_eq!(
@@ -803,8 +800,8 @@ mod test {
             .unwrap()
             .replace_all(CONFIG_TEXT, "$1");
 
-        // Then, trim off anything that has more than 2 spaces + alphabetical character
-        // or '[' following a "#".
+        // Then, trim off anything that has more than 2 spaces + alphabetical
+        // character or '[' following a "#".
         let default_config = Regex::new(r"(?m)^#(\s\s+)([a-zA-Z\[])")
             .unwrap()
             .replace_all(&default_config, "$2");
